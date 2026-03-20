@@ -1,0 +1,278 @@
+//! Lutron Integration Protocol (LIP) message types and wire formatting.
+//!
+//! All unsolicited and query-response messages from the RA2 controller start
+//! with `~`.  Client commands use `#` (execute) or `?` (query).
+//!
+//! Format:  `~CMD_TYPE,integration_id,action[,value...]`
+
+// ---------------------------------------------------------------------------
+// Incoming message types
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+pub enum LipMessage {
+    /// Zone/dimmer level change: `~OUTPUT,{id},1,{level}`
+    Output { integration_id: u32, action: OutputAction, value: f64 },
+    /// Keypad button or LED event: `~DEVICE,{id},{component},{action}[,{value}]`
+    Device { integration_id: u32, component: u32, action: DeviceAction },
+    /// Occupancy group state: `~GROUP,{id},3,{state}`
+    Group  { integration_id: u32, state: OccupancyState },
+    /// `GNET> ` ready prompt
+    Prompt,
+    /// `~ERROR,...`
+    Error(String),
+    /// Any line that didn't match the above (login prompts, echoed commands, etc.)
+    Unknown(String),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum OutputAction {
+    ZoneLevel,
+    Raise,
+    Lower,
+    Stop,
+    Flash,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum DeviceAction {
+    Press,
+    Release,
+    DoubleClick,
+    Led(u8),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum OccupancyState {
+    Occupied,
+    Vacant,
+    Unknown,
+}
+
+// ---------------------------------------------------------------------------
+// Parsing
+// ---------------------------------------------------------------------------
+
+impl LipMessage {
+    pub fn parse(line: &str) -> Self {
+        let line = line.trim();
+
+        // Ready prompt — may or may not have trailing space
+        if line == "GNET>" || line.starts_with("GNET>") {
+            return Self::Prompt;
+        }
+
+        // All valid controller responses start with '~'
+        if !line.starts_with('~') {
+            return Self::Unknown(line.to_string());
+        }
+
+        let body = &line[1..];
+        let parts: Vec<&str> = body.split(',').collect();
+
+        if parts.len() < 3 {
+            return Self::Unknown(line.to_string());
+        }
+
+        match parts[0] {
+            "OUTPUT" => Self::parse_output(&parts),
+            "DEVICE" => Self::parse_device(&parts),
+            "GROUP"  => Self::parse_group(&parts),
+            "ERROR"  => Self::Error(parts[1..].join(",")),
+            _        => Self::Unknown(line.to_string()),
+        }
+    }
+
+    fn parse_output(parts: &[&str]) -> Self {
+        let Ok(id)     = parts[1].parse::<u32>() else { return Self::Unknown(parts.join(",")) };
+        let Ok(action) = parts[2].parse::<u8>()  else { return Self::Unknown(parts.join(",")) };
+        let value = parts.get(3).and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0);
+
+        let action = match action {
+            1 => OutputAction::ZoneLevel,
+            2 => OutputAction::Raise,
+            3 => OutputAction::Lower,
+            4 => OutputAction::Stop,
+            5 => OutputAction::Flash,
+            _ => return Self::Unknown(parts.join(",")),
+        };
+
+        Self::Output { integration_id: id, action, value }
+    }
+
+    fn parse_device(parts: &[&str]) -> Self {
+        let Ok(id)        = parts[1].parse::<u32>() else { return Self::Unknown(parts.join(",")) };
+        let Ok(component) = parts[2].parse::<u32>() else { return Self::Unknown(parts.join(",")) };
+        let Ok(action)    = parts[3].parse::<u8>()  else { return Self::Unknown(parts.join(",")) };
+
+        let action = match action {
+            3 => DeviceAction::Press,
+            4 => DeviceAction::Release,
+            6 => DeviceAction::DoubleClick,
+            9 => {
+                let state = parts.get(4).and_then(|v| v.parse::<u8>().ok()).unwrap_or(255);
+                DeviceAction::Led(state)
+            }
+            _ => return Self::Unknown(parts.join(",")),
+        };
+
+        Self::Device { integration_id: id, component, action }
+    }
+
+    fn parse_group(parts: &[&str]) -> Self {
+        let Ok(id) = parts[1].parse::<u32>() else { return Self::Unknown(parts.join(",")) };
+        // parts[2] = action (always "3" for occupancy state queries/updates)
+        let state_val = parts.get(3).and_then(|v| v.parse::<u32>().ok()).unwrap_or(255);
+        let state = match state_val {
+            3   => OccupancyState::Occupied,
+            4   => OccupancyState::Vacant,
+            _   => OccupancyState::Unknown,
+        };
+        Self::Group { integration_id: id, state }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Outgoing command formatting
+// ---------------------------------------------------------------------------
+
+/// `#OUTPUT,{id},1,{level:.2}[,{fade}]`
+pub fn cmd_set_level(integration_id: u32, level: f64, fade_secs: f64) -> String {
+    let fade = format_fade(fade_secs);
+    if fade.is_empty() {
+        format!("#OUTPUT,{integration_id},1,{level:.2}")
+    } else {
+        format!("#OUTPUT,{integration_id},1,{level:.2},{fade}")
+    }
+}
+
+/// `#OUTPUT,{id},{action}` for raise(2)/lower(3)/stop(4)
+pub fn cmd_shade_action(integration_id: u32, action: u8) -> String {
+    format!("#OUTPUT,{integration_id},{action}")
+}
+
+/// `#DEVICE,{id},{component},{action}` for press(3)/release(4)
+pub fn cmd_device_action(integration_id: u32, component: u32, action: u8) -> String {
+    format!("#DEVICE,{integration_id},{component},{action}")
+}
+
+/// `?OUTPUT,{id},1`
+pub fn query_output(integration_id: u32) -> String {
+    format!("?OUTPUT,{integration_id},1")
+}
+
+/// `?GROUP,{id},3`
+pub fn query_group(integration_id: u32) -> String {
+    format!("?GROUP,{integration_id},3")
+}
+
+/// Format fade seconds as `H:MM:SS`.  Returns empty string for 0 or negative.
+fn format_fade(secs: f64) -> String {
+    if secs <= 0.0 { return String::new(); }
+    let total = secs as u64;
+    let h = total / 3600;
+    let m = (total % 3600) / 60;
+    let s = total % 60;
+    format!("{h}:{m:02}:{s:02}")
+}
+
+// ---------------------------------------------------------------------------
+// Monitoring subscription commands
+// ---------------------------------------------------------------------------
+
+/// All `#MONITORING` commands sent immediately after login.
+pub fn monitoring_commands() -> Vec<String> {
+    vec![
+        "#MONITORING,12,2".into(),  // prompt state (suppress GNET> during bulk output)
+        "#MONITORING,255,2".into(), // all event types
+        "#MONITORING,3,1".into(),   // button press/release
+        "#MONITORING,4,1".into(),   // LED state changes
+        "#MONITORING,5,1".into(),   // zone output level changes
+        "#MONITORING,6,1".into(),   // individual occupancy sensor
+        "#MONITORING,8,1".into(),   // scene activations
+        "#MONITORING,13,1".into(),  // occupancy group changes
+    ]
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_output_level() {
+        let msg = LipMessage::parse("~OUTPUT,7,1,75.00");
+        let LipMessage::Output { integration_id, action, value } = msg else { panic!() };
+        assert_eq!(integration_id, 7);
+        assert_eq!(action, OutputAction::ZoneLevel);
+        assert!((value - 75.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn parse_device_press() {
+        let msg = LipMessage::parse("~DEVICE,10,2,3");
+        let LipMessage::Device { integration_id, component, action } = msg else { panic!() };
+        assert_eq!(integration_id, 10);
+        assert_eq!(component, 2);
+        assert_eq!(action, DeviceAction::Press);
+    }
+
+    #[test]
+    fn parse_device_release() {
+        let msg = LipMessage::parse("~DEVICE,10,2,4");
+        let LipMessage::Device { action, .. } = msg else { panic!() };
+        assert_eq!(action, DeviceAction::Release);
+    }
+
+    #[test]
+    fn parse_device_double_click() {
+        let msg = LipMessage::parse("~DEVICE,10,3,6");
+        let LipMessage::Device { action, .. } = msg else { panic!() };
+        assert_eq!(action, DeviceAction::DoubleClick);
+    }
+
+    #[test]
+    fn parse_group_occupied() {
+        let msg = LipMessage::parse("~GROUP,5,3,3");
+        let LipMessage::Group { integration_id, state } = msg else { panic!() };
+        assert_eq!(integration_id, 5);
+        assert_eq!(state, OccupancyState::Occupied);
+    }
+
+    #[test]
+    fn parse_group_vacant() {
+        let msg = LipMessage::parse("~GROUP,5,3,4");
+        let LipMessage::Group { state, .. } = msg else { panic!() };
+        assert_eq!(state, OccupancyState::Vacant);
+    }
+
+    #[test]
+    fn parse_prompt() {
+        assert!(matches!(LipMessage::parse("GNET> "), LipMessage::Prompt));
+        assert!(matches!(LipMessage::parse("GNET>"), LipMessage::Prompt));
+    }
+
+    #[test]
+    fn parse_unknown_skips_non_tilde() {
+        let msg = LipMessage::parse("login: ");
+        assert!(matches!(msg, LipMessage::Unknown(_)));
+    }
+
+    #[test]
+    fn cmd_level_with_fade() {
+        assert_eq!(cmd_set_level(7, 75.0, 2.0), "#OUTPUT,7,1,75.00,0:02:00");
+    }
+
+    #[test]
+    fn cmd_level_instant() {
+        assert_eq!(cmd_set_level(7, 0.0, 0.0), "#OUTPUT,7,1,0.00");
+    }
+
+    #[test]
+    fn fade_format_sub_minute() {
+        assert_eq!(cmd_set_level(1, 100.0, 3.0), "#OUTPUT,1,1,100.00,0:00:03");
+    }
+}
