@@ -8,3 +8,4 @@ target/
 # Local config contains real credentials — never commit
 # Copy config/config.toml.example → config/config.toml and fill in your values.
 config/config.toml
+logs/

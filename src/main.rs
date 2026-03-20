@@ -8,6 +8,7 @@ use anyhow::Result;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing::{error, info};
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
 
 use config::Config;
 use devices::{DeviceEntry, SceneEntry};
@@ -21,16 +22,11 @@ const RETRY_DELAY_SECS: u64 = 60;
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "hc_lutron=info".parse().unwrap()),
-        )
-        .init();
-
     let config_path = std::env::args()
         .nth(1)
         .unwrap_or_else(|| "config/config.toml".to_string());
+
+    let _log_guard = init_logging(&config_path);
 
     let cfg = match Config::load(&config_path) {
         Ok(c) => c,
@@ -55,6 +51,43 @@ async fn main() {
             }
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Logging initialisation
+// ---------------------------------------------------------------------------
+
+fn init_logging(config_path: &str) -> tracing_appender::non_blocking::WorkerGuard {
+    // Derive plugin root: config/config.toml → parent(config/) → parent(plugin root)
+    let log_dir = std::path::Path::new(config_path)
+        .parent()
+        .and_then(|p| p.parent())
+        .map(|p| p.join("logs"))
+        .unwrap_or_else(|| std::path::PathBuf::from("logs"));
+    std::fs::create_dir_all(&log_dir).ok();
+
+    let file_appender = tracing_appender::rolling::daily(&log_dir, "hc-lutron.log");
+    let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
+
+    let stderr_filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| "hc_lutron=info".parse().unwrap());
+    let file_filter = EnvFilter::new("debug");
+
+    let stderr_layer = tracing_subscriber::fmt::layer()
+        .with_writer(std::io::stderr)
+        .with_filter(stderr_filter);
+
+    let file_layer = tracing_subscriber::fmt::layer()
+        .with_writer(non_blocking)
+        .with_ansi(false)
+        .with_filter(file_filter);
+
+    tracing_subscriber::registry()
+        .with(stderr_layer)
+        .with(file_layer)
+        .init();
+
+    guard
 }
 
 // ---------------------------------------------------------------------------

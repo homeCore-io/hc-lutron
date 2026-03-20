@@ -125,6 +125,11 @@ impl Bridge {
         // Reset backoff to minimum on successful connect
         // (done in caller after Ok return — here we just proceed)
 
+        // Re-register all devices and scenes with HomeCore on every connection.
+        // This ensures HomeCore always has current device info (name, area, type)
+        // from the config file, even after a HomeCore restart.
+        self.register_all_devices().await;
+
         // Query initial state for all controllable devices
         self.query_all_states(&write_tx).await;
 
@@ -338,6 +343,39 @@ impl Bridge {
                 debug!(hc_id, "Command sent to RA2");
             }
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Device registration (sent on every LIP connection)
+    // -----------------------------------------------------------------------
+
+    async fn register_all_devices(&self) {
+        for dev in self.devices.values() {
+            if let Err(e) = self.publisher
+                .register_device(
+                    &dev.hc_id,
+                    &dev.config.name,
+                    dev.homecore_device_type(),
+                    dev.config.area.as_deref(),
+                )
+                .await
+            {
+                warn!(hc_id = %dev.hc_id, error = %e, "Failed to re-register device");
+            }
+            if let Err(e) = self.publisher.publish_availability(&dev.hc_id, true).await {
+                warn!(hc_id = %dev.hc_id, error = %e, "Failed to publish availability");
+            }
+        }
+        for scene in &self.scenes {
+            if let Err(e) = self.publisher
+                .register_device(&scene.hc_id, &scene.config.name, "scene", None)
+                .await
+            {
+                warn!(hc_id = %scene.hc_id, error = %e, "Failed to re-register scene");
+            }
+        }
+        info!("Re-registered {} devices and {} scenes with HomeCore",
+            self.devices.len(), self.scenes.len());
     }
 
     // -----------------------------------------------------------------------
