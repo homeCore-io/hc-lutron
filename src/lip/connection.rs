@@ -47,8 +47,13 @@ impl LipReader {
                 Err(_) => continue, // incomplete UTF-8 sequence, keep reading
             };
 
+            // Terminate on:
+            //   \n          — event lines (~OUTPUT,...) and some prompts
+            //   "> "        — GNET> ready prompt (and any other "> " prompt)
+            //   ": "        — login: and password: prompts (no trailing newline)
             let done = s.ends_with('\n')
-                || (s.trim_start().starts_with('G') && s.ends_with("> "));
+                || s.ends_with("> ")
+                || s.ends_with(": ");
 
             if done {
                 let line = s.trim_end_matches(['\r', '\n', ' ']).trim().to_string();
