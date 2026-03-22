@@ -9,6 +9,8 @@ pub struct Config {
     pub devices: Vec<DeviceConfig>,
     #[serde(default)]
     pub scenes: Vec<SceneConfig>,
+    #[serde(default)]
+    pub time_clocks: Vec<TimeclockConfig>,
 }
 
 impl Config {
@@ -107,6 +109,38 @@ pub struct DeviceConfig {
     /// LED component = button component + 80; this offset is applied automatically.
     #[serde(default)]
     pub buttons: Vec<u32>,
+}
+
+// ---------------------------------------------------------------------------
+// Timeclock config
+// ---------------------------------------------------------------------------
+
+/// A single schedulable event on a Lutron RadioRA2 timeclock.
+///
+/// The RA2 main repeater supports one timeclock (ID 1).  Events are addressed
+/// by index within that timeclock.  Two operations are supported:
+///   - Enable/Disable: `#TIMECLOCK,{id},6,{event_index},{1=Enable|2=Disable}`
+///   - Execute (test trigger): `#TIMECLOCK,{id},5,{event_index}`
+///
+/// HomeCore device ID: `lutron_tc_{timeclock_id}_{event_index}`
+/// State published:    `{ "enabled": true|false }`
+/// Commands accepted:  `{ "enable": true|false }`, `{ "execute": true }`
+#[derive(Debug, Clone, Deserialize)]
+pub struct TimeclockConfig {
+    /// Lutron timeclock integration ID (almost always 1 for the Main Repeater).
+    pub timeclock_id: u32,
+    /// Event index within the timeclock (as assigned in RadioStar programming).
+    pub event_index: u32,
+    /// Human-readable name for this timeclock event.
+    pub name: String,
+    /// Optional HomeCore area tag.
+    pub area: Option<String>,
+}
+
+impl TimeclockConfig {
+    pub fn hc_id(&self) -> String {
+        format!("lutron_tc_{}_{}", self.timeclock_id, self.event_index)
+    }
 }
 
 // ---------------------------------------------------------------------------

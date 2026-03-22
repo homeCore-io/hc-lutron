@@ -2,7 +2,7 @@
 
 use serde_json::Value;
 
-use crate::config::{DeviceConfig, DeviceKind, SceneConfig};
+use crate::config::{DeviceConfig, DeviceKind, SceneConfig, TimeclockConfig};
 use crate::lip::protocol::{
     cmd_device_led, cmd_set_level, cmd_shade_action, led_component_for_button,
 };
@@ -166,6 +166,22 @@ pub struct SceneEntry {
 
 impl SceneEntry {
     pub fn new(config: SceneConfig) -> Self {
+        let hc_id = config.hc_id();
+        Self { config, hc_id }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// TimeclockEntry
+// ---------------------------------------------------------------------------
+
+pub struct TimeclockEntry {
+    pub config: TimeclockConfig,
+    pub hc_id: String,
+}
+
+impl TimeclockEntry {
+    pub fn new(config: TimeclockConfig) -> Self {
         let hc_id = config.hc_id();
         Self { config, hc_id }
     }

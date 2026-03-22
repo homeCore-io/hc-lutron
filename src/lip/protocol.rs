@@ -185,6 +185,19 @@ pub fn cmd_device_led(integration_id: u32, led_component: u32, state: u8) -> Str
     format!("#DEVICE,{integration_id},{led_component},9,{state}")
 }
 
+/// `#TIMECLOCK,{id},6,{event_index},{1=Enable|2=Disable}` — enable or disable a timeclock event.
+///
+/// Note: the Lutron protocol uses 1 for Enable and 2 for Disable (not 0/1 boolean).
+pub fn cmd_timeclock_enable(timeclock_id: u32, event_index: u32, enable: bool) -> String {
+    let state = if enable { 1 } else { 2 };
+    format!("#TIMECLOCK,{timeclock_id},6,{event_index},{state}")
+}
+
+/// `#TIMECLOCK,{id},5,{event_index}` — execute/test a timeclock event immediately.
+pub fn cmd_timeclock_execute(timeclock_id: u32, event_index: u32) -> String {
+    format!("#TIMECLOCK,{timeclock_id},5,{event_index}")
+}
+
 /// `?OUTPUT,{id},1`
 pub fn query_output(integration_id: u32) -> String {
     format!("?OUTPUT,{integration_id},1")

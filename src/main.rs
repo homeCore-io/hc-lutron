@@ -11,7 +11,7 @@ use tracing::{error, info};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
 
 use config::Config;
-use devices::{DeviceEntry, SceneEntry};
+use devices::{DeviceEntry, SceneEntry, TimeclockEntry};
 
 const MAX_ATTEMPTS: u32 = 3;
 const RETRY_DELAY_SECS: u64 = 60;
@@ -109,6 +109,10 @@ async fn try_start(cfg: &Config) -> Result<()> {
         .map(|s| SceneEntry::new(s.clone()))
         .collect();
 
+    let time_clocks: Vec<TimeclockEntry> = cfg.time_clocks.iter()
+        .map(|tc| TimeclockEntry::new(tc.clone()))
+        .collect();
+
     // --- Register all devices with HomeCore and subscribe to commands --------
     for dev in &devices {
         publisher
@@ -131,10 +135,25 @@ async fn try_start(cfg: &Config) -> Result<()> {
         publisher.subscribe_commands(&scene.hc_id).await?;
     }
 
+    // --- Register timeclock events with HomeCore -----------------------------
+    for tc in &time_clocks {
+        publisher
+            .register_device(
+                &tc.hc_id,
+                &tc.config.name,
+                "timeclock_event",
+                tc.config.area.as_deref(),
+            )
+            .await?;
+        publisher.subscribe_commands(&tc.hc_id).await?;
+        publisher.publish_availability(&tc.hc_id, true).await?;
+    }
+
     info!(
-        devices = devices.len(),
-        scenes  = scenes.len(),
-        "All devices and scenes registered with HomeCore"
+        devices     = devices.len(),
+        scenes      = scenes.len(),
+        time_clocks = time_clocks.len(),
+        "All devices, scenes, and timeclock events registered with HomeCore"
     );
 
     // --- Spawn HomeCore event loop -------------------------------------------
@@ -144,6 +163,7 @@ async fn try_start(cfg: &Config) -> Result<()> {
     let bridge = bridge::Bridge::new(
         devices,
         scenes,
+        time_clocks,
         publisher,
         cfg.lutron.clone(),
     );

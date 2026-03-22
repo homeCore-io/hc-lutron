@@ -12,12 +12,13 @@ use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, error, info, warn};
 
 use crate::config::{DeviceKind, LutronConfig};
-use crate::devices::{DeviceEntry, SceneEntry};
+use crate::devices::{DeviceEntry, SceneEntry, TimeclockEntry};
 use crate::homecore::HomecorePublisher;
 use crate::lip::connection::{connect, send_cmd, send_keepalive};
 use crate::lip::protocol::{
-    button_for_led_component, cmd_device_action, led_component_for_button, query_device_led,
-    query_group, query_output, DeviceAction, LipMessage, OccupancyState, OutputAction,
+    button_for_led_component, cmd_device_action, cmd_timeclock_enable, cmd_timeclock_execute,
+    led_component_for_button, query_device_led, query_group, query_output, DeviceAction,
+    LipMessage, OccupancyState, OutputAction,
 };
 
 // ---------------------------------------------------------------------------
@@ -33,6 +34,10 @@ pub struct Bridge {
     scenes: Vec<SceneEntry>,
     /// hc_id → scene index
     hc_to_scene: HashMap<String, usize>,
+    /// Timeclock events list
+    time_clocks: Vec<TimeclockEntry>,
+    /// hc_id → timeclock index
+    hc_to_tc: HashMap<String, usize>,
     /// Active hold timers: (keypad_integration_id, button_component) → cancel sender
     hold_timers: HashMap<(u32, u32), oneshot::Sender<()>>,
     publisher: HomecorePublisher,
@@ -45,6 +50,7 @@ impl Bridge {
     pub fn new(
         devices: Vec<DeviceEntry>,
         scenes: Vec<SceneEntry>,
+        time_clocks: Vec<TimeclockEntry>,
         publisher: HomecorePublisher,
         lutron_cfg: LutronConfig,
     ) -> Self {
@@ -65,11 +71,20 @@ impl Bridge {
             scene_list.push(s);
         }
 
+        let mut hc_to_tc = HashMap::new();
+        let mut tc_list = Vec::new();
+        for (i, tc) in time_clocks.into_iter().enumerate() {
+            hc_to_tc.insert(tc.hc_id.clone(), i);
+            tc_list.push(tc);
+        }
+
         Self {
             devices: dev_map,
             hc_to_id,
             scenes: scene_list,
             hc_to_scene,
+            time_clocks: tc_list,
+            hc_to_tc,
             hold_timers: HashMap::new(),
             publisher,
             lutron_cfg,
@@ -125,10 +140,14 @@ impl Bridge {
         // Reset backoff to minimum on successful connect
         // (done in caller after Ok return — here we just proceed)
 
-        // Re-register all devices and scenes with HomeCore on every connection.
+        // Re-register all devices, scenes, and timeclock events with HomeCore on every connection.
         // This ensures HomeCore always has current device info (name, area, type)
         // from the config file, even after a HomeCore restart.
         self.register_all_devices().await;
+
+        // Publish initial enabled=true state for all timeclock events (optimistic assumption).
+        // The RA2 has no query command for individual event enabled state.
+        self.publish_timeclock_initial_states().await;
 
         // Query initial state for all controllable devices
         self.query_all_states(&write_tx).await;
@@ -316,11 +335,43 @@ impl Bridge {
     // -----------------------------------------------------------------------
 
     async fn handle_homecore_command(
-        &self,
+        &mut self,
         hc_id: &str,
         cmd: serde_json::Value,
         write_tx: &mpsc::Sender<String>,
     ) {
+        // Timeclock event commands
+        if let Some(&tc_idx) = self.hc_to_tc.get(hc_id) {
+            let tc = &self.time_clocks[tc_idx];
+            let tid = tc.config.timeclock_id;
+            let eidx = tc.config.event_index;
+
+            if let Some(enable) = cmd["enable"].as_bool() {
+                let lip_cmd = cmd_timeclock_enable(tid, eidx, enable);
+                if let Err(e) = send_cmd(write_tx, &lip_cmd).await {
+                    warn!(hc_id, error = %e, "Failed to send TIMECLOCK enable command");
+                    return;
+                }
+                // Optimistic state update — no query available for individual event state
+                let patch = serde_json::json!({ "enabled": enable });
+                let hc_id_owned = hc_id.to_string();
+                if let Err(e) = self.publisher.publish_state_partial(&hc_id_owned, &patch).await {
+                    warn!(hc_id, error = %e, "Failed to publish timeclock state");
+                }
+                info!(hc_id, enable, "Timeclock event {}", if enable { "enabled" } else { "disabled" });
+            } else if cmd["execute"].as_bool() == Some(true) {
+                let lip_cmd = cmd_timeclock_execute(tid, eidx);
+                if let Err(e) = send_cmd(write_tx, &lip_cmd).await {
+                    warn!(hc_id, error = %e, "Failed to send TIMECLOCK execute command");
+                    return;
+                }
+                info!(hc_id, "Timeclock event executed");
+            } else {
+                warn!(hc_id, ?cmd, "Unrecognised timeclock command");
+            }
+            return;
+        }
+
         // Scene activation
         if let Some(&scene_idx) = self.hc_to_scene.get(hc_id) {
             if cmd["activate"].as_bool() == Some(true) {
@@ -405,8 +456,39 @@ impl Bridge {
                 warn!(hc_id = %scene.hc_id, error = %e, "Failed to re-register scene");
             }
         }
-        info!("Re-registered {} devices and {} scenes with HomeCore",
-            self.devices.len(), self.scenes.len());
+        for tc in &self.time_clocks {
+            if let Err(e) = self.publisher
+                .register_device(
+                    &tc.hc_id,
+                    &tc.config.name,
+                    "timeclock_event",
+                    tc.config.area.as_deref(),
+                )
+                .await
+            {
+                warn!(hc_id = %tc.hc_id, error = %e, "Failed to re-register timeclock event");
+            }
+            if let Err(e) = self.publisher.publish_availability(&tc.hc_id, true).await {
+                warn!(hc_id = %tc.hc_id, error = %e, "Failed to publish timeclock availability");
+            }
+        }
+        info!(
+            "Re-registered {} devices, {} scenes, {} timeclock events with HomeCore",
+            self.devices.len(), self.scenes.len(), self.time_clocks.len()
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Timeclock initial state (optimistic: assume enabled on every connect)
+    // -----------------------------------------------------------------------
+
+    async fn publish_timeclock_initial_states(&self) {
+        let patch = serde_json::json!({ "enabled": true });
+        for tc in &self.time_clocks {
+            if let Err(e) = self.publisher.publish_state(&tc.hc_id, &patch).await {
+                warn!(hc_id = %tc.hc_id, error = %e, "Failed to publish timeclock initial state");
+            }
+        }
     }
 
     // -----------------------------------------------------------------------
