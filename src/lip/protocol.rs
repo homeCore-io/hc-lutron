@@ -156,6 +156,35 @@ pub fn cmd_device_action(integration_id: u32, component: u32, action: u8) -> Str
     format!("#DEVICE,{integration_id},{component},{action}")
 }
 
+/// LED component number for a given button component.
+///
+/// Per the Lutron Integration Guide (all keypad types), LED component = button + 80.
+/// For example: button 1 → LED component 81, button 6 → LED component 86.
+pub const LED_COMPONENT_OFFSET: u32 = 80;
+
+pub fn led_component_for_button(button: u32) -> u32 {
+    button + LED_COMPONENT_OFFSET
+}
+
+/// Reverse mapping: button component from a received LED component number.
+/// Returns `None` if the component number is not in the LED range (≤ 80).
+pub fn button_for_led_component(led_component: u32) -> Option<u32> {
+    led_component.checked_sub(LED_COMPONENT_OFFSET).filter(|&b| b > 0)
+}
+
+/// `?DEVICE,{id},{led_component},9` — query LED state for one button.
+/// Pass the LED component number (button + 80), not the button number.
+pub fn query_device_led(integration_id: u32, led_component: u32) -> String {
+    format!("?DEVICE,{integration_id},{led_component},9")
+}
+
+/// `#DEVICE,{id},{led_component},9,{state}` — set LED state.
+/// `state`: 0 = off, 1 = on, 2 = normal-flash (1 Hz), 3 = rapid-flash (10 Hz).
+/// Pass the LED component number (button + 80), not the button number.
+pub fn cmd_device_led(integration_id: u32, led_component: u32, state: u8) -> String {
+    format!("#DEVICE,{integration_id},{led_component},9,{state}")
+}
+
 /// `?OUTPUT,{id},1`
 pub fn query_output(integration_id: u32) -> String {
     format!("?OUTPUT,{integration_id},1")
@@ -262,8 +291,41 @@ mod tests {
     }
 
     #[test]
+    fn led_component_offset() {
+        assert_eq!(led_component_for_button(1), 81);
+        assert_eq!(led_component_for_button(6), 86);
+        assert_eq!(button_for_led_component(81), Some(1));
+        assert_eq!(button_for_led_component(86), Some(6));
+        assert_eq!(button_for_led_component(80), None); // offset itself is not a valid LED
+        assert_eq!(button_for_led_component(0),  None);
+    }
+
+    #[test]
+    fn query_led_format() {
+        assert_eq!(query_device_led(72, 81), "?DEVICE,72,81,9");
+    }
+
+    #[test]
+    fn cmd_led_format() {
+        assert_eq!(cmd_device_led(72, 83, 1), "#DEVICE,72,83,9,1");
+        assert_eq!(cmd_device_led(72, 83, 0), "#DEVICE,72,83,9,0");
+    }
+
+    #[test]
+    fn parse_device_led() {
+        let msg = LipMessage::parse("~DEVICE,72,83,9,1");
+        let LipMessage::Device { integration_id, component, action } = msg else { panic!() };
+        assert_eq!(integration_id, 72);
+        assert_eq!(component, 83);
+        assert_eq!(action, DeviceAction::Led(1));
+    }
+
+    #[test]
     fn cmd_level_with_fade() {
-        assert_eq!(cmd_set_level(7, 75.0, 2.0), "#OUTPUT,7,1,75.00,0:02:00");
+        // 2 seconds = 0 hours, 0 minutes, 2 seconds → "0:00:02"
+        assert_eq!(cmd_set_level(7, 75.0, 2.0), "#OUTPUT,7,1,75.00,0:00:02");
+        // 120 seconds = 0 hours, 2 minutes, 0 seconds → "0:02:00"
+        assert_eq!(cmd_set_level(7, 75.0, 120.0), "#OUTPUT,7,1,75.00,0:02:00");
     }
 
     #[test]

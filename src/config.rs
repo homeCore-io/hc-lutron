@@ -77,8 +77,14 @@ pub enum DeviceKind {
     Switch,
     /// Motorized shade — stubbed, phase 2.
     Shade,
-    /// Wall keypad or Pico remote — publishes button events, read-only.
+    /// Wall keypad — publishes button press/release/hold/double_click events and
+    /// LED state; accepts set_led and press_button commands.
     Keypad,
+    /// Pico wireless remote — publishes button events only; truly read-only
+    /// (no LEDs, no outbound commands).  Pico button component numbers start at 2:
+    ///   Button 1 = component 2, Button 2 = component 3,
+    ///   Raise = component 5,    Lower = component 6.
+    Pico,
     /// Occupancy sensor group — publishes occupied/vacant, read-only.
     OccupancyGroup,
 }
@@ -95,6 +101,12 @@ pub struct DeviceConfig {
     /// true = inverted (0=closed, 100=open).
     #[serde(default)]
     pub invert_position: bool,
+    /// Button component numbers on this keypad (e.g. [1, 2, 3, 4, 5, 6] for a
+    /// 6-button seeTouch keypad).  Used to query each button's LED state on
+    /// connect.  Ignored for non-keypad kinds.  Per the Lutron Integration Guide,
+    /// LED component = button component + 80; this offset is applied automatically.
+    #[serde(default)]
+    pub buttons: Vec<u32>,
 }
 
 // ---------------------------------------------------------------------------

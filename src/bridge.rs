@@ -11,13 +11,13 @@ use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, error, info, warn};
 
-use crate::config::LutronConfig;
+use crate::config::{DeviceKind, LutronConfig};
 use crate::devices::{DeviceEntry, SceneEntry};
 use crate::homecore::HomecorePublisher;
 use crate::lip::connection::{connect, send_cmd, send_keepalive};
 use crate::lip::protocol::{
-    cmd_device_action, query_group, query_output, DeviceAction, LipMessage, OccupancyState,
-    OutputAction,
+    button_for_led_component, cmd_device_action, led_component_for_button, query_device_led,
+    query_group, query_output, DeviceAction, LipMessage, OccupancyState, OutputAction,
 };
 
 // ---------------------------------------------------------------------------
@@ -237,19 +237,18 @@ impl Bridge {
     ) {
         let Some(dev) = self.devices.get(&integration_id) else { return };
 
-        use crate::config::DeviceKind;
-        if dev.config.kind != DeviceKind::Keypad { return; }
+        if !dev.is_button_device() { return; }
 
-        let hc_id = dev.hc_id.clone();
-        let attr  = format!("button_{component}");
+        let hc_id     = dev.hc_id.clone();
+        let is_keypad = dev.config.kind == DeviceKind::Keypad;
 
         match action {
             DeviceAction::Press => {
-                // Publish press
+                let attr  = format!("button_{component}");
                 let patch = serde_json::json!({ &attr: "press" });
                 let _ = self.publisher.publish_state_partial(&hc_id, &patch).await;
 
-                // Start hold timer
+                // Start software hold timer (fires if button is not released within threshold)
                 let (cancel_tx, cancel_rx) = oneshot::channel::<()>();
                 self.hold_timers.insert((integration_id, component), cancel_tx);
                 let tx = hold_tx.clone();
@@ -265,10 +264,11 @@ impl Bridge {
             }
 
             DeviceAction::Release => {
-                // Cancel hold timer (if still pending — press was short)
+                // Cancel hold timer (press was short)
                 if let Some(cancel) = self.hold_timers.remove(&(integration_id, component)) {
                     let _ = cancel.send(());
                 }
+                let attr  = format!("button_{component}");
                 let patch = serde_json::json!({ &attr: "release" });
                 let _ = self.publisher.publish_state_partial(&hc_id, &patch).await;
             }
@@ -278,12 +278,23 @@ impl Bridge {
                 if let Some(cancel) = self.hold_timers.remove(&(integration_id, component)) {
                     let _ = cancel.send(());
                 }
+                let attr  = format!("button_{component}");
                 let patch = serde_json::json!({ &attr: "double_click" });
                 let _ = self.publisher.publish_state_partial(&hc_id, &patch).await;
             }
 
-            DeviceAction::Led(_) => {
-                // LED state changes are not forwarded to HomeCore
+            DeviceAction::Led(state) => {
+                // Only keypads have LEDs.  The RA2 sends LED events using the LED component
+                // number (button + 80).  Convert back to button number for the attribute name.
+                if is_keypad {
+                    if let Some(button) = button_for_led_component(component) {
+                        let attr  = format!("led_{button}");
+                        let patch = serde_json::json!({ &attr: state });
+                        let _ = self.publisher.publish_state_partial(&hc_id, &patch).await;
+                    } else {
+                        debug!(hc_id, component, state, "LED event with unexpected component number");
+                    }
+                }
             }
         }
     }
@@ -330,6 +341,26 @@ impl Bridge {
         // Regular device command
         if let Some(&integration_id) = self.hc_to_id.get(hc_id) {
             if let Some(dev) = self.devices.get(&integration_id) {
+                // press_button requires an async press+release with a gap — handle before
+                // translate_command (which is synchronous and cannot produce the delay).
+                if dev.config.kind == DeviceKind::Keypad {
+                    if let Some(btn) = cmd["press_button"].as_u64() {
+                        let button  = btn as u32;
+                        let press   = cmd_device_action(integration_id, button, 3);
+                        let release = cmd_device_action(integration_id, button, 4);
+                        if let Err(e) = send_cmd(write_tx, &press).await {
+                            warn!(hc_id, error = %e, "Failed to send button press");
+                            return;
+                        }
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                        if let Err(e) = send_cmd(write_tx, &release).await {
+                            warn!(hc_id, error = %e, "Failed to send button release");
+                        }
+                        info!(hc_id, button, "Keypad button press simulated");
+                        return;
+                    }
+                }
+
                 let lip_cmds = dev.translate_command(&cmd, self.global_fade);
                 if lip_cmds.is_empty() {
                     warn!(hc_id, ?cmd, "Unrecognised command for device");
@@ -393,6 +424,16 @@ impl Bridge {
                 let q = query_group(dev.config.integration_id);
                 if let Err(e) = send_cmd(write_tx, &q).await {
                     warn!(hc_id = %dev.hc_id, error = %e, "Failed to query group state");
+                }
+            } else if dev.config.kind == DeviceKind::Keypad {
+                // Query LED state for each configured button.
+                // LED component = button + 80 (Lutron Integration Guide universal offset).
+                for &button in dev.button_components() {
+                    let led_comp = led_component_for_button(button);
+                    let q = query_device_led(dev.config.integration_id, led_comp);
+                    if let Err(e) = send_cmd(write_tx, &q).await {
+                        warn!(hc_id = %dev.hc_id, button, error = %e, "Failed to query LED state");
+                    }
                 }
             }
         }

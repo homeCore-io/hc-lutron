@@ -3,7 +3,9 @@
 use serde_json::Value;
 
 use crate::config::{DeviceConfig, DeviceKind, SceneConfig};
-use crate::lip::protocol::{cmd_set_level, cmd_shade_action};
+use crate::lip::protocol::{
+    cmd_device_led, cmd_set_level, cmd_shade_action, led_component_for_button,
+};
 
 // ---------------------------------------------------------------------------
 // DeviceEntry
@@ -27,6 +29,7 @@ impl DeviceEntry {
             DeviceKind::Dimmer | DeviceKind::Switch => "switch",
             DeviceKind::Shade                       => "shade",
             DeviceKind::Keypad                      => "keypad",
+            DeviceKind::Pico                        => "pico_remote",
             DeviceKind::OccupancyGroup              => "binary_sensor",
         }
     }
@@ -39,6 +42,16 @@ impl DeviceEntry {
     /// Whether this device is a GROUP (occupancy) that can be queried.
     pub fn is_group(&self) -> bool {
         matches!(self.config.kind, DeviceKind::OccupancyGroup)
+    }
+
+    /// Whether this device emits button press/release/hold events (Keypad or Pico).
+    pub fn is_button_device(&self) -> bool {
+        matches!(self.config.kind, DeviceKind::Keypad | DeviceKind::Pico)
+    }
+
+    /// Button component numbers configured for this keypad (used to query LED state on connect).
+    pub fn button_components(&self) -> &[u32] {
+        &self.config.buttons
     }
 
     /// Effective fade time: per-device override or global default.
@@ -119,8 +132,25 @@ impl DeviceEntry {
                 }
             }
 
-            // Read-only device types
-            DeviceKind::Keypad | DeviceKind::OccupancyGroup => vec![],
+            DeviceKind::Keypad => {
+                // set_led: {"set_led": {"button": 3, "state": 1}}
+                // state: 0=off, 1=on, 2=normal-flash (1 Hz), 3=rapid-flash (10 Hz)
+                // LED component = button + 80 (Lutron Integration Guide, universal offset)
+                if let Some(set_led) = cmd.get("set_led") {
+                    let button = set_led["button"].as_u64().unwrap_or(0) as u32;
+                    let state  = set_led["state"].as_u64().unwrap_or(0).min(3) as u8;
+                    if button > 0 {
+                        return vec![cmd_device_led(id, led_component_for_button(button), state)];
+                    }
+                }
+                // press_button requires an async press+release with a delay and is handled
+                // in bridge.rs (same pattern as phantom button scene activation).
+                vec![]
+            }
+
+            // Pico is truly read-only — no commands accepted.
+            // OccupancyGroup is read-only.
+            DeviceKind::Pico | DeviceKind::OccupancyGroup => vec![],
         }
     }
 }
