@@ -113,6 +113,14 @@ async fn try_start(cfg: &Config) -> Result<()> {
         .map(|tc| TimeclockEntry::new(tc.clone()))
         .collect();
 
+    // --- Spawn HomeCore event loop BEFORE registrations ----------------------
+    // The AsyncClient channel has a finite capacity (64 slots).  Registering
+    // many devices queues one publish + one subscribe + one availability publish
+    // per device.  Without a running event loop draining the channel, publish()
+    // blocks once the channel fills, deadlocking startup.  Spawn run() first so
+    // MQTT I/O proceeds concurrently with the registration loop below.
+    tokio::spawn(hc_client.run(hc_tx));
+
     // --- Register all devices with HomeCore and subscribe to commands --------
     for dev in &devices {
         publisher
@@ -155,9 +163,6 @@ async fn try_start(cfg: &Config) -> Result<()> {
         time_clocks = time_clocks.len(),
         "All devices, scenes, and timeclock events registered with HomeCore"
     );
-
-    // --- Spawn HomeCore event loop -------------------------------------------
-    tokio::spawn(hc_client.run(hc_tx));
 
     // --- Build and run bridge (handles LIP reconnection internally) ----------
     let bridge = bridge::Bridge::new(
