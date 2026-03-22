@@ -17,7 +17,7 @@ use crate::homecore::HomecorePublisher;
 use crate::lip::connection::{connect, send_cmd, send_keepalive};
 use crate::lip::protocol::{
     button_for_led_component, cmd_device_action, cmd_timeclock_enable, cmd_timeclock_execute,
-    led_component_for_button, query_device_led, query_group, query_output, DeviceAction,
+    led_component_for_button, query_device_led, query_output, DeviceAction,
     LipMessage, OccupancyState, OutputAction,
 };
 
@@ -503,9 +503,13 @@ impl Bridge {
                     warn!(hc_id = %dev.hc_id, error = %e, "Failed to query output state");
                 }
             } else if dev.is_group() {
-                let q = query_group(dev.config.integration_id);
-                if let Err(e) = send_cmd(write_tx, &q).await {
-                    warn!(hc_id = %dev.hc_id, error = %e, "Failed to query group state");
+                // RA2 does not respond to ?GROUP queries — it only pushes ~GROUP on
+                // state change (via #MONITORING,13,1).  Publish vacant as the initial
+                // state so rules and the TUI have something to read immediately; the
+                // real state will arrive on the next occupancy change event.
+                let patch = dev.translate_occupancy_state(false);
+                if let Err(e) = self.publisher.publish_state(&dev.hc_id, &patch).await {
+                    warn!(hc_id = %dev.hc_id, error = %e, "Failed to publish initial occupancy state");
                 }
             } else if dev.config.kind == DeviceKind::Keypad {
                 // Query LED state for each configured button.

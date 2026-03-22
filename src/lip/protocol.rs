@@ -203,10 +203,6 @@ pub fn query_output(integration_id: u32) -> String {
     format!("?OUTPUT,{integration_id},1")
 }
 
-/// `?GROUP,{id},3`
-pub fn query_group(integration_id: u32) -> String {
-    format!("?GROUP,{integration_id},3")
-}
 
 /// Format fade seconds as `H:MM:SS`.  Returns empty string for 0 or negative.
 fn format_fade(secs: f64) -> String {
