@@ -455,6 +455,11 @@ impl Bridge {
             {
                 warn!(hc_id = %scene.hc_id, error = %e, "Failed to re-register scene");
             }
+            // Scenes have no hardware availability signal — mark online whenever
+            // the LIP connection is up.
+            if let Err(e) = self.publisher.publish_availability(&scene.hc_id, true).await {
+                warn!(hc_id = %scene.hc_id, error = %e, "Failed to publish scene availability");
+            }
         }
         for tc in &self.time_clocks {
             if let Err(e) = self.publisher

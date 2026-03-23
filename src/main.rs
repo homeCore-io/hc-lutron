@@ -141,6 +141,9 @@ async fn try_start(cfg: &Config) -> Result<()> {
             .register_device(&scene.hc_id, &scene.config.name, "scene", None)
             .await?;
         publisher.subscribe_commands(&scene.hc_id).await?;
+        // Scenes have no hardware availability signal — publish online so they
+        // don't appear as offline/unavailable in HomeCore.
+        publisher.publish_availability(&scene.hc_id, true).await?;
     }
 
     // --- Register timeclock events with HomeCore -----------------------------
