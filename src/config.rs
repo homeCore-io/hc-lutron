@@ -1,6 +1,8 @@
 use anyhow::Result;
 use serde::Deserialize;
 
+use crate::logging::LoggingConfig;
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
     pub homecore: HomecoreConfig,
@@ -11,6 +13,8 @@ pub struct Config {
     pub scenes: Vec<SceneConfig>,
     #[serde(default)]
     pub time_clocks: Vec<TimeclockConfig>,
+    #[serde(default)]
+    pub logging: LoggingConfig,
 }
 
 impl Config {
