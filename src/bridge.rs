@@ -355,7 +355,11 @@ impl Bridge {
                 // Optimistic state update — no query available for individual event state
                 let patch = serde_json::json!({ "enabled": enable });
                 let hc_id_owned = hc_id.to_string();
-                if let Err(e) = self.publisher.publish_state_partial(&hc_id_owned, &patch).await {
+                if let Err(e) = self
+                    .publisher
+                    .publish_state_partial_for_command(&hc_id_owned, &patch, &cmd, "lutron")
+                    .await
+                {
                     warn!(hc_id, error = %e, "Failed to publish timeclock state");
                 }
                 info!(hc_id, enable, "Timeclock event {}", if enable { "enabled" } else { "disabled" });
