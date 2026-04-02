@@ -512,14 +512,10 @@ impl Bridge {
                     warn!(hc_id = %dev.hc_id, error = %e, "Failed to query output state");
                 }
             } else if dev.is_group() {
-                // RA2 does not respond to ?GROUP queries — it only pushes ~GROUP on
-                // state change (via #MONITORING,13,1).  Publish vacant as the initial
-                // state so rules and the TUI have something to read immediately; the
-                // real state will arrive on the next occupancy change event.
-                let patch = dev.translate_occupancy_state(false);
-                if let Err(e) = self.publisher.publish_state(&dev.hc_id, &patch).await {
-                    warn!(hc_id = %dev.hc_id, error = %e, "Failed to publish initial occupancy state");
-                }
+                // RA2 does not answer ?GROUP queries. Do not invent a vacant/clear
+                // state on startup; that can overwrite the last known occupied state
+                // until a real ~GROUP transition arrives from the repeater.
+                debug!(hc_id = %dev.hc_id, "Skipping synthetic initial occupancy state");
             } else if dev.config.kind == DeviceKind::Keypad {
                 // Query LED state for each configured button.
                 // LED component = button + 80 (Lutron Integration Guide universal offset).
