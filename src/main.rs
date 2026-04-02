@@ -6,6 +6,7 @@ mod lip;
 mod logging;
 
 use anyhow::Result;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing::{error, info};
@@ -38,7 +39,7 @@ async fn main() {
 
     for attempt in 1..=MAX_ATTEMPTS {
         info!(attempt, max = MAX_ATTEMPTS, "Starting hc-lutron plugin");
-        match try_start(&cfg).await {
+        match try_start(&cfg, &config_path).await {
             Ok(()) => return,
             Err(e) => {
                 if attempt < MAX_ATTEMPTS {
@@ -74,7 +75,7 @@ fn init_logging(config_path: &str) -> tracing_appender::non_blocking::WorkerGuar
 // Startup — retried up to MAX_ATTEMPTS on failure
 // ---------------------------------------------------------------------------
 
-async fn try_start(cfg: &Config) -> Result<()> {
+async fn try_start(cfg: &Config, config_path: &str) -> Result<()> {
     // --- HomeCore MQTT -------------------------------------------------------
     let hc_client = homecore::HomecoreClient::connect(&cfg.homecore).await?;
     let publisher = hc_client.publisher();
@@ -92,6 +93,13 @@ async fn try_start(cfg: &Config) -> Result<()> {
     let time_clocks: Vec<TimeclockEntry> = cfg.time_clocks.iter()
         .map(|tc| TimeclockEntry::new(tc.clone()))
         .collect();
+    let current_ids: Vec<String> = devices
+        .iter()
+        .map(|dev| dev.hc_id.clone())
+        .chain(scenes.iter().map(|scene| scene.hc_id.clone()))
+        .chain(time_clocks.iter().map(|tc| tc.hc_id.clone()))
+        .collect();
+    let cache_path = published_ids_cache_path(config_path);
 
     // --- Spawn HomeCore event loop BEFORE registrations ----------------------
     // The AsyncClient channel has a finite capacity (64 slots).  Registering
@@ -100,6 +108,18 @@ async fn try_start(cfg: &Config) -> Result<()> {
     // blocks once the channel fills, deadlocking startup.  Spawn run() first so
     // MQTT I/O proceeds concurrently with the registration loop below.
     tokio::spawn(hc_client.run(hc_tx));
+
+    let previous_ids = load_published_ids(&cache_path);
+    for stale_id in previous_ids
+        .into_iter()
+        .filter(|device_id| !current_ids.iter().any(|current| current == device_id))
+    {
+        if let Err(e) = publisher.unregister_device(&stale_id).await {
+            error!(device_id = %stale_id, error = %e, "Failed to unregister stale configured device");
+        } else {
+            info!(device_id = %stale_id, "Unregistered stale configured device");
+        }
+    }
 
     // --- Register all devices with HomeCore and subscribe to commands --------
     for dev in &devices {
@@ -146,6 +166,7 @@ async fn try_start(cfg: &Config) -> Result<()> {
         time_clocks = time_clocks.len(),
         "All devices, scenes, and timeclock events registered with HomeCore"
     );
+    save_published_ids(&cache_path, &current_ids)?;
 
     // --- Build and run bridge (handles LIP reconnection internally) ----------
     let bridge = bridge::Bridge::new(
@@ -157,5 +178,25 @@ async fn try_start(cfg: &Config) -> Result<()> {
     );
 
     bridge.run(hc_rx).await;
+    Ok(())
+}
+
+fn published_ids_cache_path(config_path: &str) -> PathBuf {
+    Path::new(config_path)
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(".published-device-ids.json")
+}
+
+fn load_published_ids(path: &Path) -> Vec<String> {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<Vec<String>>(&text).ok())
+        .unwrap_or_default()
+}
+
+fn save_published_ids(path: &Path, device_ids: &[String]) -> Result<()> {
+    let payload = serde_json::to_vec_pretty(device_ids)?;
+    std::fs::write(path, payload)?;
     Ok(())
 }

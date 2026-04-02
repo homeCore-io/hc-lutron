@@ -46,7 +46,7 @@ reconnect_delay_secs = 5
 # Kinds:
 #   dimmer          — dimmable load (on, brightness 0–100)
 #   switch          — non-dimmable load (on/off only)
-#   shade           — motorized shade  [STUB — phase 2]
+#   shade           — motorized shade (published as HomeCore `cover`) [STUB — phase 2]
 #   keypad          — wall keypad or Pico remote (button events, read-only)
 #   occupancy_group — occupancy sensor group (occupied, read-only)
 # ---------------------------------------------------------------------------

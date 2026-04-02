@@ -77,7 +77,7 @@ fn default_reconnect_delay_secs() -> u64 { 5 }
 pub enum DeviceKind {
     Dimmer,
     Switch,
-    /// Motorized shade — stubbed, phase 2.
+    /// Motorized shade — published as HomeCore `cover`, stubbed for phase 2.
     Shade,
     /// Wall keypad — publishes button press/release/hold/double_click events and
     /// LED state; accepts set_led and press_button commands.
@@ -99,7 +99,7 @@ pub struct DeviceConfig {
     pub area: Option<String>,
     /// Per-device fade time override (seconds).  Falls back to lutron.default_fade_secs.
     pub fade_secs: Option<f64>,
-    /// Invert shade position: false = Lutron native (0=open, 100=closed),
+    /// Invert cover position: false = Lutron native (0=open, 100=closed),
     /// true = inverted (0=closed, 100=open).
     #[serde(default)]
     pub invert_position: bool,

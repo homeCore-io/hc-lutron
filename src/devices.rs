@@ -26,15 +26,16 @@ impl DeviceEntry {
     /// HomeCore device_type string passed to the registration payload.
     pub fn homecore_device_type(&self) -> &str {
         match self.config.kind {
-            DeviceKind::Dimmer | DeviceKind::Switch => "switch",
-            DeviceKind::Shade                       => "shade",
+            DeviceKind::Dimmer                      => "light",
+            DeviceKind::Switch                      => "switch",
+            DeviceKind::Shade                       => "cover",
             DeviceKind::Keypad                      => "keypad",
             DeviceKind::Pico                        => "pico_remote",
-            DeviceKind::OccupancyGroup              => "binary_sensor",
+            DeviceKind::OccupancyGroup              => "occupancy_sensor",
         }
     }
 
-    /// Whether this device is an OUTPUT (dimmer/switch/shade) that can be queried.
+    /// Whether this device is an OUTPUT (dimmer/switch/cover) that can be queried.
     pub fn is_output(&self) -> bool {
         matches!(self.config.kind, DeviceKind::Dimmer | DeviceKind::Switch | DeviceKind::Shade)
     }
@@ -67,8 +68,9 @@ impl DeviceEntry {
     pub fn translate_output_state(&self, level: f64) -> Option<Value> {
         match self.config.kind {
             DeviceKind::Dimmer => Some(serde_json::json!({
-                "on":         level > 0.0,
-                "brightness": (level * 10.0).round() / 10.0,
+                "on":             level > 0.0,
+                "brightness_pct": (level * 10.0).round() / 10.0,
+                "brightness":     ((level / 100.0) * 255.0).round() as i64,
             })),
             DeviceKind::Switch => Some(serde_json::json!({
                 "on": level > 0.0,
@@ -83,7 +85,10 @@ impl DeviceEntry {
 
     /// Translate an occupancy state to a HomeCore state patch.
     pub fn translate_occupancy_state(&self, occupied: bool) -> Value {
-        serde_json::json!({ "occupied": occupied })
+        serde_json::json!({
+            "occupied": occupied,
+            "occupancy": occupied,
+        })
     }
 
     // -----------------------------------------------------------------------
@@ -98,8 +103,14 @@ impl DeviceEntry {
 
         match self.config.kind {
             DeviceKind::Dimmer => {
-                let level = if let Some(b) = cmd["brightness"].as_f64() {
+                let level = if let Some(b) = cmd["brightness_pct"].as_f64() {
                     b.clamp(0.0, 100.0)
+                } else if let Some(b) = cmd["brightness"].as_f64() {
+                    if b > 100.0 {
+                        ((b / 255.0) * 100.0).clamp(0.0, 100.0)
+                    } else {
+                        b.clamp(0.0, 100.0)
+                    }
                 } else if let Some(on) = cmd["on"].as_bool() {
                     if on { 100.0 } else { 0.0 }
                 } else {

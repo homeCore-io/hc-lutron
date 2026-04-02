@@ -24,6 +24,13 @@ pub struct HomecorePublisher {
 }
 
 impl HomecorePublisher {
+    async fn clear_retained_topic(&self, topic: String) -> Result<()> {
+        self.client
+            .publish(topic, QoS::AtLeastOnce, true, Vec::<u8>::new())
+            .await
+            .context("clear_retained_topic failed")
+    }
+
     /// Publish full device state (retained).
     pub async fn publish_state(&self, device_id: &str, state: &Value) -> Result<()> {
         let topic = format!("homecore/devices/{device_id}/state");
@@ -89,6 +96,26 @@ impl HomecorePublisher {
             .context("subscribe_commands failed")?;
         debug!(device_id, "Subscribed to commands");
         Ok(())
+    }
+
+    /// Retire a device from HomeCore and clear its retained topics.
+    pub async fn unregister_device(&self, device_id: &str) -> Result<()> {
+        self.clear_retained_topic(format!("homecore/devices/{device_id}/state"))
+            .await?;
+        self.clear_retained_topic(format!("homecore/devices/{device_id}/availability"))
+            .await?;
+        self.clear_retained_topic(format!("homecore/devices/{device_id}/schema"))
+            .await?;
+
+        let topic = format!("homecore/plugins/{}/unregister", self.plugin_id);
+        let payload = serde_json::json!({
+            "device_id": device_id,
+            "plugin_id": self.plugin_id,
+        });
+        self.client
+            .publish(&topic, QoS::AtLeastOnce, false, serde_json::to_vec(&payload)?)
+            .await
+            .context("unregister_device failed")
     }
 }
 
