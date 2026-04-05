@@ -38,6 +38,8 @@ pub struct Bridge {
     time_clocks: Vec<TimeclockEntry>,
     /// hc_id → timeclock index
     hc_to_tc: HashMap<String, usize>,
+    /// (main_repeater_id, button_component) → scene index
+    repeater_button_to_scene: HashMap<(u32, u32), usize>,
     /// Active hold timers: (keypad_integration_id, button_component) → cancel sender
     hold_timers: HashMap<(u32, u32), oneshot::Sender<()>>,
     publisher: HomecorePublisher,
@@ -65,9 +67,14 @@ impl Bridge {
         }
 
         let mut hc_to_scene = HashMap::new();
+        let mut repeater_button_to_scene = HashMap::new();
         let mut scene_list = Vec::new();
         for (i, s) in scenes.into_iter().enumerate() {
             hc_to_scene.insert(s.hc_id.clone(), i);
+            repeater_button_to_scene.insert(
+                (s.config.main_repeater_id, s.config.button_component),
+                i,
+            );
             scene_list.push(s);
         }
 
@@ -83,6 +90,7 @@ impl Bridge {
             hc_to_id,
             scenes: scene_list,
             hc_to_scene,
+            repeater_button_to_scene,
             time_clocks: tc_list,
             hc_to_tc,
             hold_timers: HashMap::new(),
@@ -254,6 +262,24 @@ impl Bridge {
         action: DeviceAction,
         hold_tx: &mpsc::Sender<(u32, u32)>,
     ) {
+        // Check for phantom scene LED events on the main repeater.
+        // These arrive as ~DEVICE,{repeater_id},{led_component},9,{state}.
+        if let DeviceAction::Led(state) = action {
+            if let Some(button) = button_for_led_component(component) {
+                if let Some(&scene_idx) = self.repeater_button_to_scene.get(&(integration_id, button)) {
+                    let scene = &self.scenes[scene_idx];
+                    let on = state > 0; // 1=on, 2=flash, 3=rapid → all "on"
+                    let patch = serde_json::json!({ "on": on });
+                    let hc_id = scene.hc_id.clone();
+                    if let Err(e) = self.publisher.publish_state(&hc_id, &patch).await {
+                        warn!(hc_id, error = %e, "Failed to publish scene LED state");
+                    }
+                    debug!(hc_id, on, led_state = state, "Scene LED state updated");
+                    return;
+                }
+            }
+        }
+
         let Some(dev) = self.devices.get(&integration_id) else { return };
 
         if !dev.is_button_device() { return; }
@@ -526,6 +552,16 @@ impl Bridge {
                         warn!(hc_id = %dev.hc_id, button, error = %e, "Failed to query LED state");
                     }
                 }
+            }
+        }
+
+        // Query LED state for phantom scene buttons on the main repeater.
+        for scene in &self.scenes {
+            let led_comp = led_component_for_button(scene.config.button_component);
+            let q = query_device_led(scene.config.main_repeater_id, led_comp);
+            if let Err(e) = send_cmd(write_tx, &q).await {
+                warn!(hc_id = %scene.hc_id, button = scene.config.button_component,
+                    error = %e, "Failed to query scene LED state");
             }
         }
     }
