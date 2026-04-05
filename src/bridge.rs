@@ -13,8 +13,8 @@ use tracing::{debug, error, info, warn};
 
 use crate::config::{DeviceKind, LutronConfig};
 use crate::devices::{DeviceEntry, SceneEntry, TimeclockEntry};
-use crate::homecore::HomecorePublisher;
 use crate::lip::connection::{connect, send_cmd, send_keepalive};
+use plugin_sdk_rs::DevicePublisher;
 use crate::lip::protocol::{
     button_for_led_component, cmd_device_action, cmd_timeclock_enable, cmd_timeclock_execute,
     led_component_for_button, query_device_led, query_output, DeviceAction,
@@ -42,7 +42,7 @@ pub struct Bridge {
     repeater_button_to_scene: HashMap<(u32, u32), usize>,
     /// Active hold timers: (keypad_integration_id, button_component) → cancel sender
     hold_timers: HashMap<(u32, u32), oneshot::Sender<()>>,
-    publisher: HomecorePublisher,
+    publisher: DevicePublisher,
     lutron_cfg: LutronConfig,
     global_fade: f64,
     hold_threshold_ms: u64,
@@ -53,7 +53,7 @@ impl Bridge {
         devices: Vec<DeviceEntry>,
         scenes: Vec<SceneEntry>,
         time_clocks: Vec<TimeclockEntry>,
-        publisher: HomecorePublisher,
+        publisher: DevicePublisher,
         lutron_cfg: LutronConfig,
     ) -> Self {
         let global_fade = lutron_cfg.default_fade_secs;
@@ -464,11 +464,12 @@ impl Bridge {
     async fn register_all_devices(&self) {
         for dev in self.devices.values() {
             if let Err(e) = self.publisher
-                .register_device(
+                .register_device_full(
                     &dev.hc_id,
                     &dev.config.name,
-                    dev.homecore_device_type(),
+                    Some(dev.homecore_device_type()),
                     dev.config.area.as_deref(),
+                    None,
                 )
                 .await
             {
@@ -480,7 +481,7 @@ impl Bridge {
         }
         for scene in &self.scenes {
             if let Err(e) = self.publisher
-                .register_device(&scene.hc_id, &scene.config.name, "scene", None)
+                .register_device_full(&scene.hc_id, &scene.config.name, Some("scene"), None, None)
                 .await
             {
                 warn!(hc_id = %scene.hc_id, error = %e, "Failed to re-register scene");
@@ -493,11 +494,12 @@ impl Bridge {
         }
         for tc in &self.time_clocks {
             if let Err(e) = self.publisher
-                .register_device(
+                .register_device_full(
                     &tc.hc_id,
                     &tc.config.name,
-                    "timeclock_event",
+                    Some("timeclock_event"),
                     tc.config.area.as_deref(),
+                    None,
                 )
                 .await
             {

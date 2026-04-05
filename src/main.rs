@@ -1,15 +1,15 @@
 mod bridge;
 mod config;
 mod devices;
-mod homecore;
 mod lip;
 mod logging;
 
 use anyhow::Result;
+use plugin_sdk_rs::{PluginClient, PluginConfig};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::sync::mpsc;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use config::Config;
 use devices::{DeviceEntry, SceneEntry, TimeclockEntry};
@@ -27,7 +27,7 @@ async fn main() {
         .nth(1)
         .unwrap_or_else(|| "config/config.toml".to_string());
 
-    let _log_guard = init_logging(&config_path);
+    let (_log_guard, log_level_handle) = init_logging(&config_path);
 
     let cfg = match Config::load(&config_path) {
         Ok(c) => c,
@@ -39,7 +39,7 @@ async fn main() {
 
     for attempt in 1..=MAX_ATTEMPTS {
         info!(attempt, max = MAX_ATTEMPTS, "Starting hc-lutron plugin");
-        match try_start(&cfg, &config_path).await {
+        match try_start(&cfg, &config_path, log_level_handle.clone()).await {
             Ok(()) => return,
             Err(e) => {
                 if attempt < MAX_ATTEMPTS {
@@ -58,7 +58,7 @@ async fn main() {
 // Logging initialisation
 // ---------------------------------------------------------------------------
 
-fn init_logging(config_path: &str) -> tracing_appender::non_blocking::WorkerGuard {
+fn init_logging(config_path: &str) -> (tracing_appender::non_blocking::WorkerGuard, hc_logging::LogLevelHandle) {
     #[derive(serde::Deserialize, Default)]
     struct Bootstrap {
         #[serde(default)]
@@ -75,11 +75,28 @@ fn init_logging(config_path: &str) -> tracing_appender::non_blocking::WorkerGuar
 // Startup — retried up to MAX_ATTEMPTS on failure
 // ---------------------------------------------------------------------------
 
-async fn try_start(cfg: &Config, config_path: &str) -> Result<()> {
-    // --- HomeCore MQTT -------------------------------------------------------
-    let hc_client = homecore::HomecoreClient::connect(&cfg.homecore).await?;
-    let publisher = hc_client.publisher();
-    let (hc_tx, hc_rx) = mpsc::channel::<(String, serde_json::Value)>(256);
+async fn try_start(cfg: &Config, config_path: &str, log_level_handle: hc_logging::LogLevelHandle) -> Result<()> {
+    // --- Plugin SDK connection --------------------------------------------------
+    let sdk_config = PluginConfig {
+        broker_host: cfg.homecore.broker_host.clone(),
+        broker_port: cfg.homecore.broker_port,
+        plugin_id:   cfg.homecore.plugin_id.clone(),
+        password:    cfg.homecore.password.clone(),
+    };
+
+    let client = PluginClient::connect(sdk_config).await?;
+    let publisher = client.device_publisher();
+    let (cmd_tx, cmd_rx) = mpsc::channel::<(String, serde_json::Value)>(256);
+
+    // Enable management protocol (heartbeat + remote config/log commands).
+    let mgmt = client
+        .enable_management(
+            60,
+            Some(env!("CARGO_PKG_VERSION").to_string()),
+            Some(config_path.to_string()),
+            Some(log_level_handle),
+        )
+        .await?;
 
     // --- Build device and scene registries -----------------------------------
     let devices: Vec<DeviceEntry> = cfg.devices.iter()
@@ -101,20 +118,13 @@ async fn try_start(cfg: &Config, config_path: &str) -> Result<()> {
         .collect();
     let cache_path = published_ids_cache_path(config_path);
 
-    // --- Spawn HomeCore event loop BEFORE registrations ----------------------
-    // The AsyncClient channel has a finite capacity (64 slots).  Registering
-    // many devices queues one publish + one subscribe + one availability publish
-    // per device.  Without a running event loop draining the channel, publish()
-    // blocks once the channel fills, deadlocking startup.  Spawn run() first so
-    // MQTT I/O proceeds concurrently with the registration loop below.
-    tokio::spawn(hc_client.run(hc_tx));
-
+    // --- Clean up stale devices from previous config -------------------------
     let previous_ids = load_published_ids(&cache_path);
     for stale_id in previous_ids
         .into_iter()
         .filter(|device_id| !current_ids.iter().any(|current| current == device_id))
     {
-        if let Err(e) = publisher.unregister_device(&stale_id).await {
+        if let Err(e) = client.unregister_device(&stale_id).await {
             error!(device_id = %stale_id, error = %e, "Failed to unregister stale configured device");
         } else {
             info!(device_id = %stale_id, "Unregistered stale configured device");
@@ -123,41 +133,64 @@ async fn try_start(cfg: &Config, config_path: &str) -> Result<()> {
 
     // --- Register all devices with HomeCore and subscribe to commands --------
     for dev in &devices {
-        publisher
-            .register_device(
+        if let Err(e) = client
+            .register_device_full(
                 &dev.hc_id,
                 &dev.config.name,
-                dev.homecore_device_type(),
+                Some(dev.homecore_device_type()),
                 dev.config.area.as_deref(),
+                None,
             )
-            .await?;
-        publisher.subscribe_commands(&dev.hc_id).await?;
-        publisher.publish_availability(&dev.hc_id, true).await?;
+            .await
+        {
+            warn!(hc_id = %dev.hc_id, error = %e, "Failed to register device");
+        }
+        if let Err(e) = client.subscribe_commands(&dev.hc_id).await {
+            error!(hc_id = %dev.hc_id, error = %e, "Failed to subscribe commands");
+        }
+        if let Err(e) = publisher.publish_availability(&dev.hc_id, true).await {
+            warn!(hc_id = %dev.hc_id, error = %e, "Failed to publish availability");
+        }
     }
 
     // --- Register scenes with HomeCore ---------------------------------------
     for scene in &scenes {
-        publisher
-            .register_device(&scene.hc_id, &scene.config.name, "scene", None)
-            .await?;
-        publisher.subscribe_commands(&scene.hc_id).await?;
+        if let Err(e) = client
+            .register_device_full(&scene.hc_id, &scene.config.name, Some("scene"), None, None)
+            .await
+        {
+            warn!(hc_id = %scene.hc_id, error = %e, "Failed to register scene");
+        }
+        if let Err(e) = client.subscribe_commands(&scene.hc_id).await {
+            error!(hc_id = %scene.hc_id, error = %e, "Failed to subscribe commands");
+        }
         // Scenes have no hardware availability signal — publish online so they
         // don't appear as offline/unavailable in HomeCore.
-        publisher.publish_availability(&scene.hc_id, true).await?;
+        if let Err(e) = publisher.publish_availability(&scene.hc_id, true).await {
+            warn!(hc_id = %scene.hc_id, error = %e, "Failed to publish scene availability");
+        }
     }
 
     // --- Register timeclock events with HomeCore -----------------------------
     for tc in &time_clocks {
-        publisher
-            .register_device(
+        if let Err(e) = client
+            .register_device_full(
                 &tc.hc_id,
                 &tc.config.name,
-                "timeclock_event",
+                Some("timeclock_event"),
                 tc.config.area.as_deref(),
+                None,
             )
-            .await?;
-        publisher.subscribe_commands(&tc.hc_id).await?;
-        publisher.publish_availability(&tc.hc_id, true).await?;
+            .await
+        {
+            warn!(hc_id = %tc.hc_id, error = %e, "Failed to register timeclock event");
+        }
+        if let Err(e) = client.subscribe_commands(&tc.hc_id).await {
+            error!(hc_id = %tc.hc_id, error = %e, "Failed to subscribe commands");
+        }
+        if let Err(e) = publisher.publish_availability(&tc.hc_id, true).await {
+            warn!(hc_id = %tc.hc_id, error = %e, "Failed to publish timeclock availability");
+        }
     }
 
     info!(
@@ -168,6 +201,22 @@ async fn try_start(cfg: &Config, config_path: &str) -> Result<()> {
     );
     save_published_ids(&cache_path, &current_ids)?;
 
+    // --- Start the SDK event loop — routes device commands to the mpsc channel
+    let cmd_tx_clone = cmd_tx.clone();
+    tokio::spawn(async move {
+        if let Err(e) = client
+            .run_managed(
+                move |device_id, payload| {
+                    let _ = cmd_tx_clone.try_send((device_id, payload));
+                },
+                mgmt,
+            )
+            .await
+        {
+            error!(error = %e, "SDK event loop exited with error");
+        }
+    });
+
     // --- Build and run bridge (handles LIP reconnection internally) ----------
     let bridge = bridge::Bridge::new(
         devices,
@@ -177,7 +226,7 @@ async fn try_start(cfg: &Config, config_path: &str) -> Result<()> {
         cfg.lutron.clone(),
     );
 
-    bridge.run(hc_rx).await;
+    bridge.run(cmd_rx).await;
     Ok(())
 }
 
