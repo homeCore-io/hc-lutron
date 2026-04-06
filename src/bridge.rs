@@ -274,11 +274,16 @@ impl Bridge {
         //   - Keypads: button + 80  (e.g., button 3 → component 83)
         //   - Main repeater phantom buttons: button + 100  (e.g., button 6 → component 106)
         //
-        // Try both offsets when looking up scene mappings.
+        // Try +80 first (keypads), then +100 (repeater phantoms).  We check
+        // the scene lookup with each candidate — not just whether the subtraction
+        // yields a positive number.
         if let DeviceAction::Led(state) = action {
-            let button = button_for_led_component(component)
-                .or_else(|| component.checked_sub(100).filter(|&b| b > 0));
-            if let Some(button) = button {
+            // Candidate button numbers from each known offset.
+            let candidates = [
+                component.checked_sub(80).filter(|&b| b > 0),   // keypad offset
+                component.checked_sub(100).filter(|&b| b > 0),  // repeater phantom offset
+            ];
+            for button in candidates.into_iter().flatten() {
                 if let Some(&scene_idx) = self.repeater_button_to_scene.get(&(integration_id, button)) {
                     let scene = &self.scenes[scene_idx];
                     let on = state > 0; // 1=on, 2=flash, 3=rapid → all "on"
