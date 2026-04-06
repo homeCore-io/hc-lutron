@@ -89,6 +89,11 @@ pub enum DeviceKind {
     Pico,
     /// Occupancy sensor group — publishes occupied/vacant, read-only.
     OccupancyGroup,
+    /// Visor Control Receiver (RR-VCRX) — 6 buttons with LEDs (like Keypad)
+    /// plus Contact Closure Inputs (CCIs) that report open/closed state.
+    /// Button LEDs use standard +80 offset (component 81-86).
+    /// CCI components are typically 31-34.
+    Vcrx,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -109,6 +114,11 @@ pub struct DeviceConfig {
     /// LED component = button component + 80; this offset is applied automatically.
     #[serde(default)]
     pub buttons: Vec<u32>,
+    /// CCI (Contact Closure Input) component numbers on a VCRX device.
+    /// These report open/closed state via ~DEVICE press/release events.
+    /// Typical values: [31, 32, 33, 34].  Ignored for non-VCRX kinds.
+    #[serde(default)]
+    pub ccis: Vec<u32>,
 }
 
 // ---------------------------------------------------------------------------

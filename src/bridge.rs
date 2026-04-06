@@ -298,7 +298,20 @@ impl Bridge {
         if !dev.is_button_device() { return; }
 
         let hc_id     = dev.hc_id.clone();
-        let is_keypad = dev.config.kind == DeviceKind::Keypad;
+        let has_leds = matches!(dev.config.kind, DeviceKind::Keypad | DeviceKind::Vcrx);
+
+        // CCI events on VCRX — contact closure inputs report open/closed.
+        // CCI press (action 3) = contact closed, release (action 4) = contact open.
+        if dev.is_cci_component(component) {
+            let closed = matches!(action, DeviceAction::Press);
+            let attr = format!("cci_{component}");
+            let patch = serde_json::json!({
+                &attr: if closed { "closed" } else { "open" }
+            });
+            let _ = self.publisher.publish_state_partial(&hc_id, &patch).await;
+            debug!(hc_id, component, closed, "CCI state changed");
+            return;
+        }
 
         match action {
             DeviceAction::Press => {
@@ -342,9 +355,10 @@ impl Bridge {
             }
 
             DeviceAction::Led(state) => {
-                // Only keypads have LEDs.  The RA2 sends LED events using the LED component
-                // number (button + 80).  Convert back to button number for the attribute name.
-                if is_keypad {
+                // Keypads and VCRX have LEDs.  The RA2 sends LED events using the LED
+                // component number (button + 80).  Convert back to button number for
+                // the attribute name.
+                if has_leds {
                     if let Some(button) = button_for_led_component(component) {
                         let attr  = format!("led_{button}");
                         let patch = serde_json::json!({ &attr: state });
@@ -443,7 +457,7 @@ impl Bridge {
             if let Some(dev) = self.devices.get(&integration_id) {
                 // press_button requires an async press+release with a gap — handle before
                 // translate_command (which is synchronous and cannot produce the delay).
-                if dev.config.kind == DeviceKind::Keypad {
+                if matches!(dev.config.kind, DeviceKind::Keypad | DeviceKind::Vcrx) {
                     if let Some(btn) = cmd["press_button"].as_u64() {
                         let button  = btn as u32;
                         let press   = cmd_device_action(integration_id, button, 3);
@@ -576,7 +590,7 @@ impl Bridge {
                 // state on startup; that can overwrite the last known occupied state
                 // until a real ~GROUP transition arrives from the repeater.
                 debug!(hc_id = %dev.hc_id, "Skipping synthetic initial occupancy state");
-            } else if dev.config.kind == DeviceKind::Keypad {
+            } else if matches!(dev.config.kind, DeviceKind::Keypad | DeviceKind::Vcrx) {
                 // Query LED state for each configured button.
                 // LED component = button + 80 (Lutron Integration Guide universal offset).
                 for &button in dev.button_components() {

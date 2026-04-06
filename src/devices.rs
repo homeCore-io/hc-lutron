@@ -32,6 +32,7 @@ impl DeviceEntry {
             DeviceKind::Keypad                      => "keypad",
             DeviceKind::Pico                        => "pico_remote",
             DeviceKind::OccupancyGroup              => "occupancy_sensor",
+            DeviceKind::Vcrx                        => "vcrx",
         }
     }
 
@@ -45,9 +46,26 @@ impl DeviceEntry {
         matches!(self.config.kind, DeviceKind::OccupancyGroup)
     }
 
-    /// Whether this device emits button press/release/hold events (Keypad or Pico).
+    /// Whether this device emits button press/release/hold events (Keypad, Pico, or VCRX).
     pub fn is_button_device(&self) -> bool {
-        matches!(self.config.kind, DeviceKind::Keypad | DeviceKind::Pico)
+        matches!(self.config.kind, DeviceKind::Keypad | DeviceKind::Pico | DeviceKind::Vcrx)
+    }
+
+    /// Whether this device has CCI (Contact Closure Input) components.
+    #[allow(dead_code)]
+    pub fn has_ccis(&self) -> bool {
+        !self.config.ccis.is_empty()
+    }
+
+    /// CCI component numbers configured for this device.
+    #[allow(dead_code)]
+    pub fn cci_components(&self) -> &[u32] {
+        &self.config.ccis
+    }
+
+    /// Whether a component number is a CCI on this device.
+    pub fn is_cci_component(&self, component: u32) -> bool {
+        self.config.ccis.contains(&component)
     }
 
     /// Button component numbers configured for this keypad (used to query LED state on connect).
@@ -156,6 +174,20 @@ impl DeviceEntry {
                 }
                 // press_button requires an async press+release with a delay and is handled
                 // in bridge.rs (same pattern as phantom button scene activation).
+                vec![]
+            }
+
+            DeviceKind::Vcrx => {
+                // VCRX supports set_led (same as Keypad, +80 offset).
+                // press_button is handled in bridge.rs.
+                // CCIs are read-only inputs — no outbound commands.
+                if let Some(set_led) = cmd.get("set_led") {
+                    let button = set_led["button"].as_u64().unwrap_or(0) as u32;
+                    let state  = set_led["state"].as_u64().unwrap_or(0).min(3) as u8;
+                    if button > 0 {
+                        return vec![cmd_device_led(id, led_component_for_button(button), state)];
+                    }
+                }
                 vec![]
             }
 
