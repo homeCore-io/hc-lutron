@@ -98,6 +98,27 @@ async fn try_start(cfg: &Config, config_path: &str, log_level_handle: hc_logging
         )
         .await?;
 
+    // Start the SDK event loop FIRST so the MQTT eventloop is pumping while
+    // we register devices.  Without this, queued publishes/subscribes block
+    // forever once the rumqttc internal buffer (64) fills up.
+    let cmd_tx_clone = cmd_tx.clone();
+    tokio::spawn(async move {
+        if let Err(e) = client
+            .run_managed(
+                move |device_id, payload| {
+                    let _ = cmd_tx_clone.try_send((device_id, payload));
+                },
+                mgmt,
+            )
+            .await
+        {
+            error!(error = %e, "SDK event loop exited with error");
+        }
+    });
+
+    // Brief yield to let the eventloop connect before we start publishing.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
     // --- Build device and scene registries -----------------------------------
     let devices: Vec<DeviceEntry> = cfg.devices.iter()
         .map(|d| DeviceEntry::new(d.clone()))
@@ -124,7 +145,7 @@ async fn try_start(cfg: &Config, config_path: &str, log_level_handle: hc_logging
         .into_iter()
         .filter(|device_id| !current_ids.iter().any(|current| current == device_id))
     {
-        if let Err(e) = client.unregister_device(&stale_id).await {
+        if let Err(e) = publisher.unregister_device(&cfg.homecore.plugin_id, &stale_id).await {
             error!(device_id = %stale_id, error = %e, "Failed to unregister stale configured device");
         } else {
             info!(device_id = %stale_id, "Unregistered stale configured device");
@@ -132,8 +153,9 @@ async fn try_start(cfg: &Config, config_path: &str, log_level_handle: hc_logging
     }
 
     // --- Register all devices with HomeCore and subscribe to commands --------
+    // Registration uses DevicePublisher (not PluginClient, which is consumed).
     for dev in &devices {
-        if let Err(e) = client
+        if let Err(e) = publisher
             .register_device_full(
                 &dev.hc_id,
                 &dev.config.name,
@@ -145,9 +167,6 @@ async fn try_start(cfg: &Config, config_path: &str, log_level_handle: hc_logging
         {
             warn!(hc_id = %dev.hc_id, error = %e, "Failed to register device");
         }
-        if let Err(e) = client.subscribe_commands(&dev.hc_id).await {
-            error!(hc_id = %dev.hc_id, error = %e, "Failed to subscribe commands");
-        }
         if let Err(e) = publisher.publish_availability(&dev.hc_id, true).await {
             warn!(hc_id = %dev.hc_id, error = %e, "Failed to publish availability");
         }
@@ -155,17 +174,12 @@ async fn try_start(cfg: &Config, config_path: &str, log_level_handle: hc_logging
 
     // --- Register scenes with HomeCore ---------------------------------------
     for scene in &scenes {
-        if let Err(e) = client
+        if let Err(e) = publisher
             .register_device_full(&scene.hc_id, &scene.config.name, Some("scene"), None, None)
             .await
         {
             warn!(hc_id = %scene.hc_id, error = %e, "Failed to register scene");
         }
-        if let Err(e) = client.subscribe_commands(&scene.hc_id).await {
-            error!(hc_id = %scene.hc_id, error = %e, "Failed to subscribe commands");
-        }
-        // Scenes have no hardware availability signal — publish online so they
-        // don't appear as offline/unavailable in HomeCore.
         if let Err(e) = publisher.publish_availability(&scene.hc_id, true).await {
             warn!(hc_id = %scene.hc_id, error = %e, "Failed to publish scene availability");
         }
@@ -173,7 +187,7 @@ async fn try_start(cfg: &Config, config_path: &str, log_level_handle: hc_logging
 
     // --- Register timeclock events with HomeCore -----------------------------
     for tc in &time_clocks {
-        if let Err(e) = client
+        if let Err(e) = publisher
             .register_device_full(
                 &tc.hc_id,
                 &tc.config.name,
@@ -184,9 +198,6 @@ async fn try_start(cfg: &Config, config_path: &str, log_level_handle: hc_logging
             .await
         {
             warn!(hc_id = %tc.hc_id, error = %e, "Failed to register timeclock event");
-        }
-        if let Err(e) = client.subscribe_commands(&tc.hc_id).await {
-            error!(hc_id = %tc.hc_id, error = %e, "Failed to subscribe commands");
         }
         if let Err(e) = publisher.publish_availability(&tc.hc_id, true).await {
             warn!(hc_id = %tc.hc_id, error = %e, "Failed to publish timeclock availability");
@@ -200,22 +211,6 @@ async fn try_start(cfg: &Config, config_path: &str, log_level_handle: hc_logging
         "All devices, scenes, and timeclock events registered with HomeCore"
     );
     save_published_ids(&cache_path, &current_ids)?;
-
-    // --- Start the SDK event loop — routes device commands to the mpsc channel
-    let cmd_tx_clone = cmd_tx.clone();
-    tokio::spawn(async move {
-        if let Err(e) = client
-            .run_managed(
-                move |device_id, payload| {
-                    let _ = cmd_tx_clone.try_send((device_id, payload));
-                },
-                mgmt,
-            )
-            .await
-        {
-            error!(error = %e, "SDK event loop exited with error");
-        }
-    });
 
     // --- Build and run bridge (handles LIP reconnection internally) ----------
     let bridge = bridge::Bridge::new(
