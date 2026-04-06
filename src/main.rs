@@ -167,6 +167,9 @@ async fn try_start(cfg: &Config, config_path: &str, log_level_handle: hc_logging
         {
             warn!(hc_id = %dev.hc_id, error = %e, "Failed to register device");
         }
+        if let Err(e) = publisher.subscribe_commands(&dev.hc_id).await {
+            error!(hc_id = %dev.hc_id, error = %e, "Failed to subscribe commands");
+        }
         if let Err(e) = publisher.publish_availability(&dev.hc_id, true).await {
             warn!(hc_id = %dev.hc_id, error = %e, "Failed to publish availability");
         }
@@ -179,6 +182,9 @@ async fn try_start(cfg: &Config, config_path: &str, log_level_handle: hc_logging
             .await
         {
             warn!(hc_id = %scene.hc_id, error = %e, "Failed to register scene");
+        }
+        if let Err(e) = publisher.subscribe_commands(&scene.hc_id).await {
+            error!(hc_id = %scene.hc_id, error = %e, "Failed to subscribe scene commands");
         }
         if let Err(e) = publisher.publish_availability(&scene.hc_id, true).await {
             warn!(hc_id = %scene.hc_id, error = %e, "Failed to publish scene availability");
@@ -198,6 +204,9 @@ async fn try_start(cfg: &Config, config_path: &str, log_level_handle: hc_logging
             .await
         {
             warn!(hc_id = %tc.hc_id, error = %e, "Failed to register timeclock event");
+        }
+        if let Err(e) = publisher.subscribe_commands(&tc.hc_id).await {
+            error!(hc_id = %tc.hc_id, error = %e, "Failed to subscribe timeclock commands");
         }
         if let Err(e) = publisher.publish_availability(&tc.hc_id, true).await {
             warn!(hc_id = %tc.hc_id, error = %e, "Failed to publish timeclock availability");
