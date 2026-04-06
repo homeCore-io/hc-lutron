@@ -157,6 +157,11 @@ impl Bridge {
         // The RA2 has no query command for individual event enabled state.
         self.publish_timeclock_initial_states().await;
 
+        // Publish initial on=false for all scenes.  The RA2 main repeater may
+        // not respond to LED queries for phantom buttons — unsolicited LED events
+        // will update to true when scenes are actually activated.
+        self.publish_scene_initial_states().await;
+
         // Query initial state for all controllable devices
         self.query_all_states(&write_tx).await;
 
@@ -524,6 +529,19 @@ impl Bridge {
         for tc in &self.time_clocks {
             if let Err(e) = self.publisher.publish_state(&tc.hc_id, &patch).await {
                 warn!(hc_id = %tc.hc_id, error = %e, "Failed to publish timeclock initial state");
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Scene initial state (assume off; LED events will update to true)
+    // -----------------------------------------------------------------------
+
+    async fn publish_scene_initial_states(&self) {
+        let patch = serde_json::json!({ "on": false });
+        for scene in &self.scenes {
+            if let Err(e) = self.publisher.publish_state(&scene.hc_id, &patch).await {
+                warn!(hc_id = %scene.hc_id, error = %e, "Failed to publish scene initial state");
             }
         }
     }
