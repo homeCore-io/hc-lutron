@@ -419,6 +419,12 @@ impl Bridge {
                 // Small gap between press and release
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 let _ = send_cmd(write_tx, &release).await;
+
+                // Optimistic state update — the RA2 may not send LED events
+                // for programmatic phantom button activations.
+                let patch = serde_json::json!({ "on": true });
+                let _ = self.publisher.publish_state(hc_id, &patch).await;
+
                 info!(scene = %hc_id, "Scene activated");
             }
             return;
