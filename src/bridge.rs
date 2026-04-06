@@ -269,8 +269,16 @@ impl Bridge {
     ) {
         // Check for phantom scene LED events on the main repeater.
         // These arrive as ~DEVICE,{repeater_id},{led_component},9,{state}.
+        //
+        // LED component offsets differ by device type:
+        //   - Keypads: button + 80  (e.g., button 3 → component 83)
+        //   - Main repeater phantom buttons: button + 100  (e.g., button 6 → component 106)
+        //
+        // Try both offsets when looking up scene mappings.
         if let DeviceAction::Led(state) = action {
-            if let Some(button) = button_for_led_component(component) {
+            let button = button_for_led_component(component)
+                .or_else(|| component.checked_sub(100).filter(|&b| b > 0));
+            if let Some(button) = button {
                 if let Some(&scene_idx) = self.repeater_button_to_scene.get(&(integration_id, button)) {
                     let scene = &self.scenes[scene_idx];
                     let on = state > 0; // 1=on, 2=flash, 3=rapid → all "on"
@@ -279,7 +287,7 @@ impl Bridge {
                     if let Err(e) = self.publisher.publish_state(&hc_id, &patch).await {
                         warn!(hc_id, error = %e, "Failed to publish scene LED state");
                     }
-                    debug!(hc_id, on, led_state = state, "Scene LED state updated");
+                    debug!(hc_id, on, led_state = state, component, button, "Scene LED state updated");
                     return;
                 }
             }
@@ -582,8 +590,9 @@ impl Bridge {
         }
 
         // Query LED state for phantom scene buttons on the main repeater.
+        // Main repeater uses LED component = button + 100 (not +80 like keypads).
         for scene in &self.scenes {
-            let led_comp = led_component_for_button(scene.config.button_component);
+            let led_comp = scene.config.button_component + 100;
             let q = query_device_led(scene.config.main_repeater_id, led_comp);
             if let Err(e) = send_cmd(write_tx, &q).await {
                 warn!(hc_id = %scene.hc_id, button = scene.config.button_component,
