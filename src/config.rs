@@ -6,6 +6,8 @@ pub struct Config {
     pub homecore: HomecoreConfig,
     pub lutron: LutronConfig,
     #[serde(default)]
+    pub logging: crate::logging::LoggingConfig,
+    #[serde(default)]
     pub devices: Vec<DeviceConfig>,
     #[serde(default)]
     pub scenes: Vec<SceneConfig>,
