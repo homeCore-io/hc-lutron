@@ -1,10 +1,12 @@
 [workspace]
 
 [package]
-name    = "hc-lutron"
-version = "0.1.0"
-edition = "2021"
-license = "MIT OR Apache-2.0"
+name        = "hc-lutron"
+version     = "0.1.0"
+edition     = "2021"
+license     = "MIT OR Apache-2.0"
+description = "Lutron RadioRA2 plugin for homeCore"
+repository  = "https://github.com/homeCore-io/hc-lutron"
 
 [[bin]]
 name = "hc-lutron"
