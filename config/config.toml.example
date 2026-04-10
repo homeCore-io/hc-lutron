@@ -1,5 +1,5 @@
 # hc-lutron plugin configuration
-# Copy to config/config.toml and fill in your values.
+# Copy to config/config.dev.toml and fill in your values.
 
 # ---------------------------------------------------------------------------
 # HomeCore broker connection

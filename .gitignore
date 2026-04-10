@@ -6,6 +6,7 @@ target/
 .idea/
 
 # Local config contains real credentials — never commit
-# Copy config/config.toml.example → config/config.toml and fill in your values.
+# Copy config/config.toml.example → config/config.dev.toml and fill in your values.
 config/config.toml
+config/config.dev.toml
 logs/
