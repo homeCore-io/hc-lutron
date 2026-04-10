@@ -15,7 +15,7 @@ use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
-use super::protocol::{LipMessage, monitoring_commands};
+use super::protocol::{monitoring_commands, LipMessage};
 
 // ---------------------------------------------------------------------------
 // Reader
@@ -36,7 +36,11 @@ impl LipReader {
         self.buf.clear();
         loop {
             let mut byte = [0u8; 1];
-            let n = self.read_half.read(&mut byte).await.context("LIP socket read")?;
+            let n = self
+                .read_half
+                .read(&mut byte)
+                .await
+                .context("LIP socket read")?;
             if n == 0 {
                 bail!("LIP connection closed by remote host");
             }
@@ -51,9 +55,7 @@ impl LipReader {
             //   \n          — event lines (~OUTPUT,...) and some prompts
             //   "> "        — GNET> ready prompt (and any other "> " prompt)
             //   ": "        — login: and password: prompts (no trailing newline)
-            let done = s.ends_with('\n')
-                || s.ends_with("> ")
-                || s.ends_with(": ");
+            let done = s.ends_with('\n') || s.ends_with("> ") || s.ends_with(": ");
 
             if done {
                 let line = s.trim_end_matches(['\r', '\n', ' ']).trim().to_string();
@@ -105,7 +107,10 @@ pub async fn connect(
         .with_context(|| format!("TCP connect to {host}:{port} failed"))?;
 
     let (read_half, write_half) = stream.into_split();
-    let mut reader = LipReader { read_half, buf: Vec::with_capacity(256) };
+    let mut reader = LipReader {
+        read_half,
+        buf: Vec::with_capacity(256),
+    };
     let write_tx = spawn_writer(write_half);
 
     login(&mut reader, &write_tx, username, password).await?;
@@ -122,17 +127,20 @@ async fn login(
     password: &str,
 ) -> Result<()> {
     // Wait for "login: "
-    wait_for_keyword(reader, "login").await
+    wait_for_keyword(reader, "login")
+        .await
         .context("Timed out waiting for login prompt")?;
     send_cmd(write_tx, username).await?;
 
     // Wait for "password: "
-    wait_for_keyword(reader, "password").await
+    wait_for_keyword(reader, "password")
+        .await
         .context("Timed out waiting for password prompt")?;
     send_cmd(write_tx, password).await?;
 
     // Wait for first GNET> prompt
-    wait_for_prompt(reader).await
+    wait_for_prompt(reader)
+        .await
         .context("Timed out waiting for GNET> after login")?;
 
     info!("Lutron RA2 login successful");

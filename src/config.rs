@@ -19,8 +19,7 @@ impl Config {
     pub fn load(path: &str) -> Result<Self> {
         let text = std::fs::read_to_string(path)
             .map_err(|e| anyhow::anyhow!("Cannot read config {path}: {e}"))?;
-        toml::from_str(&text)
-            .map_err(|e| anyhow::anyhow!("Config parse error in {path}: {e}"))
+        toml::from_str(&text).map_err(|e| anyhow::anyhow!("Config parse error in {path}: {e}"))
     }
 }
 
@@ -40,9 +39,15 @@ pub struct HomecoreConfig {
     pub password: String,
 }
 
-fn default_broker_host() -> String { "127.0.0.1".into() }
-fn default_broker_port() -> u16    { 1883 }
-fn default_plugin_id()   -> String { "plugin.lutron".into() }
+fn default_broker_host() -> String {
+    "127.0.0.1".into()
+}
+fn default_broker_port() -> u16 {
+    1883
+}
+fn default_plugin_id() -> String {
+    "plugin.lutron".into()
+}
 
 // ---------------------------------------------------------------------------
 // Lutron RA2 connection
@@ -64,11 +69,21 @@ pub struct LutronConfig {
     pub reconnect_delay_secs: u64,
 }
 
-fn default_lip_port()            -> u16 { 23 }
-fn default_username()            -> String { "lutron".into() }
-fn default_fade_secs()           -> f64 { 1.0 }
-fn default_hold_threshold_ms()   -> u64 { 500 }
-fn default_reconnect_delay_secs() -> u64 { 5 }
+fn default_lip_port() -> u16 {
+    23
+}
+fn default_username() -> String {
+    "lutron".into()
+}
+fn default_fade_secs() -> f64 {
+    1.0
+}
+fn default_hold_threshold_ms() -> u64 {
+    500
+}
+fn default_reconnect_delay_secs() -> u64 {
+    5
+}
 
 // ---------------------------------------------------------------------------
 // Device config
@@ -171,7 +186,8 @@ pub struct SceneConfig {
 impl SceneConfig {
     /// HomeCore device ID: `lutron_scene_{name_slug}`.
     pub fn hc_id(&self) -> String {
-        let slug = self.name
+        let slug = self
+            .name
             .to_lowercase()
             .chars()
             .map(|c| if c.is_alphanumeric() { c } else { '_' })

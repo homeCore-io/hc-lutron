@@ -39,7 +39,14 @@ async fn main() {
 
     for attempt in 1..=MAX_ATTEMPTS {
         info!(attempt, max = MAX_ATTEMPTS, "Starting hc-lutron plugin");
-        match try_start(&cfg, &config_path, log_level_handle.clone(), mqtt_log_handle.clone()).await {
+        match try_start(
+            &cfg,
+            &config_path,
+            log_level_handle.clone(),
+            mqtt_log_handle.clone(),
+        )
+        .await
+        {
             Ok(()) => return,
             Err(e) => {
                 if attempt < MAX_ATTEMPTS {
@@ -58,7 +65,13 @@ async fn main() {
 // Logging initialisation
 // ---------------------------------------------------------------------------
 
-fn init_logging(config_path: &str) -> (tracing_appender::non_blocking::WorkerGuard, hc_logging::LogLevelHandle, plugin_sdk_rs::mqtt_log_layer::MqttLogHandle) {
+fn init_logging(
+    config_path: &str,
+) -> (
+    tracing_appender::non_blocking::WorkerGuard,
+    hc_logging::LogLevelHandle,
+    plugin_sdk_rs::mqtt_log_layer::MqttLogHandle,
+) {
     #[derive(serde::Deserialize, Default)]
     struct Bootstrap {
         #[serde(default)]
@@ -68,20 +81,30 @@ fn init_logging(config_path: &str) -> (tracing_appender::non_blocking::WorkerGua
         .ok()
         .and_then(|s| toml::from_str(&s).ok())
         .unwrap_or_default();
-    logging::init_logging(config_path, "hc-lutron", "hc_lutron=info", &bootstrap.logging)
+    logging::init_logging(
+        config_path,
+        "hc-lutron",
+        "hc_lutron=info",
+        &bootstrap.logging,
+    )
 }
 
 // ---------------------------------------------------------------------------
 // Startup — retried up to MAX_ATTEMPTS on failure
 // ---------------------------------------------------------------------------
 
-async fn try_start(cfg: &Config, config_path: &str, log_level_handle: hc_logging::LogLevelHandle, mqtt_log_handle: plugin_sdk_rs::mqtt_log_layer::MqttLogHandle) -> Result<()> {
+async fn try_start(
+    cfg: &Config,
+    config_path: &str,
+    log_level_handle: hc_logging::LogLevelHandle,
+    mqtt_log_handle: plugin_sdk_rs::mqtt_log_layer::MqttLogHandle,
+) -> Result<()> {
     // --- Plugin SDK connection --------------------------------------------------
     let sdk_config = PluginConfig {
         broker_host: cfg.homecore.broker_host.clone(),
         broker_port: cfg.homecore.broker_port,
-        plugin_id:   cfg.homecore.plugin_id.clone(),
-        password:    cfg.homecore.password.clone(),
+        plugin_id: cfg.homecore.plugin_id.clone(),
+        password: cfg.homecore.password.clone(),
     };
 
     let client = PluginClient::connect(sdk_config).await?;
@@ -125,15 +148,21 @@ async fn try_start(cfg: &Config, config_path: &str, log_level_handle: hc_logging
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // --- Build device and scene registries -----------------------------------
-    let devices: Vec<DeviceEntry> = cfg.devices.iter()
+    let devices: Vec<DeviceEntry> = cfg
+        .devices
+        .iter()
         .map(|d| DeviceEntry::new(d.clone()))
         .collect();
 
-    let scenes: Vec<SceneEntry> = cfg.scenes.iter()
+    let scenes: Vec<SceneEntry> = cfg
+        .scenes
+        .iter()
         .map(|s| SceneEntry::new(s.clone()))
         .collect();
 
-    let time_clocks: Vec<TimeclockEntry> = cfg.time_clocks.iter()
+    let time_clocks: Vec<TimeclockEntry> = cfg
+        .time_clocks
+        .iter()
         .map(|tc| TimeclockEntry::new(tc.clone()))
         .collect();
     let current_ids: Vec<String> = devices
@@ -150,7 +179,10 @@ async fn try_start(cfg: &Config, config_path: &str, log_level_handle: hc_logging
         .into_iter()
         .filter(|device_id| !current_ids.iter().any(|current| current == device_id))
     {
-        if let Err(e) = publisher.unregister_device(&cfg.homecore.plugin_id, &stale_id).await {
+        if let Err(e) = publisher
+            .unregister_device(&cfg.homecore.plugin_id, &stale_id)
+            .await
+        {
             error!(device_id = %stale_id, error = %e, "Failed to unregister stale configured device");
         } else {
             info!(device_id = %stale_id, "Unregistered stale configured device");
@@ -219,21 +251,15 @@ async fn try_start(cfg: &Config, config_path: &str, log_level_handle: hc_logging
     }
 
     info!(
-        devices     = devices.len(),
-        scenes      = scenes.len(),
+        devices = devices.len(),
+        scenes = scenes.len(),
         time_clocks = time_clocks.len(),
         "All devices, scenes, and timeclock events registered with HomeCore"
     );
     save_published_ids(&cache_path, &current_ids)?;
 
     // --- Build and run bridge (handles LIP reconnection internally) ----------
-    let bridge = bridge::Bridge::new(
-        devices,
-        scenes,
-        time_clocks,
-        publisher,
-        cfg.lutron.clone(),
-    );
+    let bridge = bridge::Bridge::new(devices, scenes, time_clocks, publisher, cfg.lutron.clone());
 
     bridge.run(cmd_rx).await;
     Ok(())

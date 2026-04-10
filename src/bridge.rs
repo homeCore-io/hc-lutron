@@ -14,12 +14,12 @@ use tracing::{debug, error, info, warn};
 use crate::config::{DeviceKind, LutronConfig};
 use crate::devices::{DeviceEntry, SceneEntry, TimeclockEntry};
 use crate::lip::connection::{connect, send_cmd, send_keepalive};
-use plugin_sdk_rs::DevicePublisher;
 use crate::lip::protocol::{
     button_for_led_component, cmd_device_action, cmd_timeclock_enable, cmd_timeclock_execute,
-    led_component_for_button, query_device_led, query_output, DeviceAction,
-    LipMessage, OccupancyState, OutputAction,
+    led_component_for_button, query_device_led, query_output, DeviceAction, LipMessage,
+    OccupancyState, OutputAction,
 };
+use plugin_sdk_rs::DevicePublisher;
 
 // ---------------------------------------------------------------------------
 // Bridge
@@ -71,10 +71,8 @@ impl Bridge {
         let mut scene_list = Vec::new();
         for (i, s) in scenes.into_iter().enumerate() {
             hc_to_scene.insert(s.hc_id.clone(), i);
-            repeater_button_to_scene.insert(
-                (s.config.main_repeater_id, s.config.button_component),
-                i,
-            );
+            repeater_button_to_scene
+                .insert((s.config.main_repeater_id, s.config.button_component), i);
             scene_list.push(s);
         }
 
@@ -105,10 +103,7 @@ impl Bridge {
     // Outer reconnect loop
     // -----------------------------------------------------------------------
 
-    pub async fn run(
-        mut self,
-        mut homecore_rx: mpsc::Receiver<(String, serde_json::Value)>,
-    ) {
+    pub async fn run(mut self, mut homecore_rx: mpsc::Receiver<(String, serde_json::Value)>) {
         let mut backoff = Duration::from_secs(self.lutron_cfg.reconnect_delay_secs);
 
         loop {
@@ -171,7 +166,11 @@ impl Bridge {
         let mut keepalive = tokio::time::interval(Duration::from_secs(60));
         keepalive.tick().await; // skip immediate first tick
 
-        info!("Bridge event loop running ({} devices, {} scenes)", self.devices.len(), self.scenes.len());
+        info!(
+            "Bridge event loop running ({} devices, {} scenes)",
+            self.devices.len(),
+            self.scenes.len()
+        );
 
         loop {
             tokio::select! {
@@ -215,7 +214,11 @@ impl Bridge {
         hold_tx: &mpsc::Sender<(u32, u32)>,
     ) {
         match msg {
-            LipMessage::Output { integration_id, action: OutputAction::ZoneLevel, value } => {
+            LipMessage::Output {
+                integration_id,
+                action: OutputAction::ZoneLevel,
+                value,
+            } => {
                 if let Some(dev) = self.devices.get(&integration_id) {
                     if let Some(state) = dev.translate_output_state(value) {
                         let hc_id = dev.hc_id.clone();
@@ -226,7 +229,10 @@ impl Bridge {
                 }
             }
 
-            LipMessage::Group { integration_id, state } => {
+            LipMessage::Group {
+                integration_id,
+                state,
+            } => {
                 if let Some(dev) = self.devices.get(&integration_id) {
                     let occupied = state == OccupancyState::Occupied;
                     let patch = dev.translate_occupancy_state(occupied);
@@ -237,8 +243,13 @@ impl Bridge {
                 }
             }
 
-            LipMessage::Device { integration_id, component, action } => {
-                self.handle_device_event(integration_id, component, action, hold_tx).await;
+            LipMessage::Device {
+                integration_id,
+                component,
+                action,
+            } => {
+                self.handle_device_event(integration_id, component, action, hold_tx)
+                    .await;
             }
 
             LipMessage::Prompt => {
@@ -280,11 +291,13 @@ impl Bridge {
         if let DeviceAction::Led(state) = action {
             // Candidate button numbers from each known offset.
             let candidates = [
-                component.checked_sub(80).filter(|&b| b > 0),   // keypad offset
-                component.checked_sub(100).filter(|&b| b > 0),  // repeater phantom offset
+                component.checked_sub(80).filter(|&b| b > 0), // keypad offset
+                component.checked_sub(100).filter(|&b| b > 0), // repeater phantom offset
             ];
             for button in candidates.into_iter().flatten() {
-                if let Some(&scene_idx) = self.repeater_button_to_scene.get(&(integration_id, button)) {
+                if let Some(&scene_idx) =
+                    self.repeater_button_to_scene.get(&(integration_id, button))
+                {
                     let scene = &self.scenes[scene_idx];
                     let on = state > 0; // 1=on, 2=flash, 3=rapid → all "on"
                     let patch = serde_json::json!({ "on": on });
@@ -292,17 +305,28 @@ impl Bridge {
                     if let Err(e) = self.publisher.publish_state(&hc_id, &patch).await {
                         warn!(hc_id, error = %e, "Failed to publish scene LED state");
                     }
-                    debug!(hc_id, on, led_state = state, component, button, "Scene LED state updated");
+                    debug!(
+                        hc_id,
+                        on,
+                        led_state = state,
+                        component,
+                        button,
+                        "Scene LED state updated"
+                    );
                     return;
                 }
             }
         }
 
-        let Some(dev) = self.devices.get(&integration_id) else { return };
+        let Some(dev) = self.devices.get(&integration_id) else {
+            return;
+        };
 
-        if !dev.is_button_device() { return; }
+        if !dev.is_button_device() {
+            return;
+        }
 
-        let hc_id     = dev.hc_id.clone();
+        let hc_id = dev.hc_id.clone();
         let has_leds = matches!(dev.config.kind, DeviceKind::Keypad | DeviceKind::Vcrx);
 
         // CCI events on VCRX — contact closure inputs report open/closed.
@@ -320,13 +344,14 @@ impl Bridge {
 
         match action {
             DeviceAction::Press => {
-                let attr  = format!("button_{component}");
+                let attr = format!("button_{component}");
                 let patch = serde_json::json!({ &attr: "press" });
                 let _ = self.publisher.publish_state_partial(&hc_id, &patch).await;
 
                 // Start software hold timer (fires if button is not released within threshold)
                 let (cancel_tx, cancel_rx) = oneshot::channel::<()>();
-                self.hold_timers.insert((integration_id, component), cancel_tx);
+                self.hold_timers
+                    .insert((integration_id, component), cancel_tx);
                 let tx = hold_tx.clone();
                 let threshold = self.hold_threshold_ms;
                 tokio::spawn(async move {
@@ -344,7 +369,7 @@ impl Bridge {
                 if let Some(cancel) = self.hold_timers.remove(&(integration_id, component)) {
                     let _ = cancel.send(());
                 }
-                let attr  = format!("button_{component}");
+                let attr = format!("button_{component}");
                 let patch = serde_json::json!({ &attr: "release" });
                 let _ = self.publisher.publish_state_partial(&hc_id, &patch).await;
             }
@@ -354,7 +379,7 @@ impl Bridge {
                 if let Some(cancel) = self.hold_timers.remove(&(integration_id, component)) {
                     let _ = cancel.send(());
                 }
-                let attr  = format!("button_{component}");
+                let attr = format!("button_{component}");
                 let patch = serde_json::json!({ &attr: "double_click" });
                 let _ = self.publisher.publish_state_partial(&hc_id, &patch).await;
             }
@@ -365,11 +390,14 @@ impl Bridge {
                 // the attribute name.
                 if has_leds {
                     if let Some(button) = button_for_led_component(component) {
-                        let attr  = format!("led_{button}");
+                        let attr = format!("led_{button}");
                         let patch = serde_json::json!({ &attr: state });
                         let _ = self.publisher.publish_state_partial(&hc_id, &patch).await;
                     } else {
-                        debug!(hc_id, component, state, "LED event with unexpected component number");
+                        debug!(
+                            hc_id,
+                            component, state, "LED event with unexpected component number"
+                        );
                     }
                 }
             }
@@ -382,9 +410,12 @@ impl Bridge {
         self.hold_timers.remove(&(keypad_id, button));
 
         if let Some(dev) = self.devices.get(&keypad_id) {
-            let attr  = format!("button_{button}");
+            let attr = format!("button_{button}");
             let patch = serde_json::json!({ &attr: "hold" });
-            let _ = self.publisher.publish_state_partial(&dev.hc_id.clone(), &patch).await;
+            let _ = self
+                .publisher
+                .publish_state_partial(&dev.hc_id.clone(), &patch)
+                .await;
         }
     }
 
@@ -420,7 +451,12 @@ impl Bridge {
                 {
                     warn!(hc_id, error = %e, "Failed to publish timeclock state");
                 }
-                info!(hc_id, enable, "Timeclock event {}", if enable { "enabled" } else { "disabled" });
+                info!(
+                    hc_id,
+                    enable,
+                    "Timeclock event {}",
+                    if enable { "enabled" } else { "disabled" }
+                );
             } else if cmd["execute"].as_bool() == Some(true) {
                 let lip_cmd = cmd_timeclock_execute(tid, eidx);
                 if let Err(e) = send_cmd(write_tx, &lip_cmd).await {
@@ -440,7 +476,7 @@ impl Bridge {
                 let scene = &self.scenes[scene_idx];
                 let rid = scene.config.main_repeater_id;
                 let btn = scene.config.button_component;
-                let press   = cmd_device_action(rid, btn, 3);
+                let press = cmd_device_action(rid, btn, 3);
                 let release = cmd_device_action(rid, btn, 4);
                 let _ = send_cmd(write_tx, &press).await;
                 // Small gap between press and release
@@ -464,8 +500,8 @@ impl Bridge {
                 // translate_command (which is synchronous and cannot produce the delay).
                 if matches!(dev.config.kind, DeviceKind::Keypad | DeviceKind::Vcrx) {
                     if let Some(btn) = cmd["press_button"].as_u64() {
-                        let button  = btn as u32;
-                        let press   = cmd_device_action(integration_id, button, 3);
+                        let button = btn as u32;
+                        let press = cmd_device_action(integration_id, button, 3);
                         let release = cmd_device_action(integration_id, button, 4);
                         if let Err(e) = send_cmd(write_tx, &press).await {
                             warn!(hc_id, error = %e, "Failed to send button press");
@@ -501,7 +537,8 @@ impl Bridge {
 
     async fn register_all_devices(&self) {
         for dev in self.devices.values() {
-            if let Err(e) = self.publisher
+            if let Err(e) = self
+                .publisher
                 .register_device_full(
                     &dev.hc_id,
                     &dev.config.name,
@@ -518,7 +555,8 @@ impl Bridge {
             }
         }
         for scene in &self.scenes {
-            if let Err(e) = self.publisher
+            if let Err(e) = self
+                .publisher
                 .register_device_full(&scene.hc_id, &scene.config.name, Some("scene"), None, None)
                 .await
             {
@@ -526,12 +564,17 @@ impl Bridge {
             }
             // Scenes have no hardware availability signal — mark online whenever
             // the LIP connection is up.
-            if let Err(e) = self.publisher.publish_availability(&scene.hc_id, true).await {
+            if let Err(e) = self
+                .publisher
+                .publish_availability(&scene.hc_id, true)
+                .await
+            {
                 warn!(hc_id = %scene.hc_id, error = %e, "Failed to publish scene availability");
             }
         }
         for tc in &self.time_clocks {
-            if let Err(e) = self.publisher
+            if let Err(e) = self
+                .publisher
                 .register_device_full(
                     &tc.hc_id,
                     &tc.config.name,
@@ -549,7 +592,9 @@ impl Bridge {
         }
         info!(
             "Re-registered {} devices, {} scenes, {} timeclock events with HomeCore",
-            self.devices.len(), self.scenes.len(), self.time_clocks.len()
+            self.devices.len(),
+            self.scenes.len(),
+            self.time_clocks.len()
         );
     }
 

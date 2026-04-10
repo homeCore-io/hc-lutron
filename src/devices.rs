@@ -26,19 +26,22 @@ impl DeviceEntry {
     /// HomeCore device_type string passed to the registration payload.
     pub fn homecore_device_type(&self) -> &str {
         match self.config.kind {
-            DeviceKind::Dimmer                      => "light",
-            DeviceKind::Switch                      => "switch",
-            DeviceKind::Shade                       => "cover",
-            DeviceKind::Keypad                      => "keypad",
-            DeviceKind::Pico                        => "pico_remote",
-            DeviceKind::OccupancyGroup              => "occupancy_sensor",
-            DeviceKind::Vcrx                        => "vcrx",
+            DeviceKind::Dimmer => "light",
+            DeviceKind::Switch => "switch",
+            DeviceKind::Shade => "cover",
+            DeviceKind::Keypad => "keypad",
+            DeviceKind::Pico => "pico_remote",
+            DeviceKind::OccupancyGroup => "occupancy_sensor",
+            DeviceKind::Vcrx => "vcrx",
         }
     }
 
     /// Whether this device is an OUTPUT (dimmer/switch/cover) that can be queried.
     pub fn is_output(&self) -> bool {
-        matches!(self.config.kind, DeviceKind::Dimmer | DeviceKind::Switch | DeviceKind::Shade)
+        matches!(
+            self.config.kind,
+            DeviceKind::Dimmer | DeviceKind::Switch | DeviceKind::Shade
+        )
     }
 
     /// Whether this device is a GROUP (occupancy) that can be queried.
@@ -48,7 +51,10 @@ impl DeviceEntry {
 
     /// Whether this device emits button press/release/hold events (Keypad, Pico, or VCRX).
     pub fn is_button_device(&self) -> bool {
-        matches!(self.config.kind, DeviceKind::Keypad | DeviceKind::Pico | DeviceKind::Vcrx)
+        matches!(
+            self.config.kind,
+            DeviceKind::Keypad | DeviceKind::Pico | DeviceKind::Vcrx
+        )
     }
 
     /// Whether this device has CCI (Contact Closure Input) components.
@@ -94,7 +100,11 @@ impl DeviceEntry {
                 "on": level > 0.0,
             })),
             DeviceKind::Shade => {
-                let pos = if self.config.invert_position { 100.0 - level } else { level };
+                let pos = if self.config.invert_position {
+                    100.0 - level
+                } else {
+                    level
+                };
                 Some(serde_json::json!({ "position": (pos * 10.0).round() / 10.0 }))
             }
             _ => None,
@@ -116,7 +126,9 @@ impl DeviceEntry {
     /// Translate a HomeCore command payload into one or more LIP command strings.
     /// Returns an empty Vec if the command is not applicable to this device type.
     pub fn translate_command(&self, cmd: &Value, global_fade: f64) -> Vec<String> {
-        let fade = cmd["fade_secs"].as_f64().unwrap_or_else(|| self.fade_secs(global_fade));
+        let fade = cmd["fade_secs"]
+            .as_f64()
+            .unwrap_or_else(|| self.fade_secs(global_fade));
         let id = self.config.integration_id;
 
         match self.config.kind {
@@ -130,7 +142,11 @@ impl DeviceEntry {
                         b.clamp(0.0, 100.0)
                     }
                 } else if let Some(on) = cmd["on"].as_bool() {
-                    if on { 100.0 } else { 0.0 }
+                    if on {
+                        100.0
+                    } else {
+                        0.0
+                    }
                 } else {
                     return vec![];
                 };
@@ -139,16 +155,20 @@ impl DeviceEntry {
 
             DeviceKind::Switch => {
                 let level = match cmd["on"].as_bool() {
-                    Some(true)  => 100.0,
+                    Some(true) => 100.0,
                     Some(false) => 0.0,
-                    None        => return vec![],
+                    None => return vec![],
                 };
                 vec![cmd_set_level(id, level, 0.0)]
             }
 
             DeviceKind::Shade => {
                 if let Some(pos) = cmd["position"].as_f64() {
-                    let level = if self.config.invert_position { 100.0 - pos } else { pos };
+                    let level = if self.config.invert_position {
+                        100.0 - pos
+                    } else {
+                        pos
+                    };
                     vec![cmd_set_level(id, level.clamp(0.0, 100.0), 0.0)]
                 } else if cmd["raise"].as_bool() == Some(true) {
                     vec![cmd_shade_action(id, 2)]
@@ -167,7 +187,7 @@ impl DeviceEntry {
                 // LED component = button + 80 (Lutron Integration Guide, universal offset)
                 if let Some(set_led) = cmd.get("set_led") {
                     let button = set_led["button"].as_u64().unwrap_or(0) as u32;
-                    let state  = set_led["state"].as_u64().unwrap_or(0).min(3) as u8;
+                    let state = set_led["state"].as_u64().unwrap_or(0).min(3) as u8;
                     if button > 0 {
                         return vec![cmd_device_led(id, led_component_for_button(button), state)];
                     }
@@ -183,7 +203,7 @@ impl DeviceEntry {
                 // CCIs are read-only inputs — no outbound commands.
                 if let Some(set_led) = cmd.get("set_led") {
                     let button = set_led["button"].as_u64().unwrap_or(0) as u32;
-                    let state  = set_led["state"].as_u64().unwrap_or(0).min(3) as u8;
+                    let state = set_led["state"].as_u64().unwrap_or(0).min(3) as u8;
                     if button > 0 {
                         return vec![cmd_device_led(id, led_component_for_button(button), state)];
                     }
