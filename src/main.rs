@@ -107,7 +107,12 @@ async fn try_start(
         password: cfg.homecore.password.clone(),
     };
 
-    let client = PluginClient::connect(sdk_config).await?;
+    let client = PluginClient::connect(sdk_config)
+        .await?
+        // Cross-restart device tracking via the SDK. Same path the
+        // plugin used to manage by hand, so existing snapshots are
+        // picked up unchanged.
+        .with_device_persistence(published_ids_cache_path(config_path));
     mqtt_log_handle.connect(
         client.mqtt_client(),
         &cfg.homecore.plugin_id,
@@ -171,24 +176,6 @@ async fn try_start(
         .chain(scenes.iter().map(|scene| scene.hc_id.clone()))
         .chain(time_clocks.iter().map(|tc| tc.hc_id.clone()))
         .collect();
-    let cache_path = published_ids_cache_path(config_path);
-
-    // --- Clean up stale devices from previous config -------------------------
-    let previous_ids = load_published_ids(&cache_path);
-    for stale_id in previous_ids
-        .into_iter()
-        .filter(|device_id| !current_ids.iter().any(|current| current == device_id))
-    {
-        if let Err(e) = publisher
-            .unregister_device(&cfg.homecore.plugin_id, &stale_id)
-            .await
-        {
-            error!(device_id = %stale_id, error = %e, "Failed to unregister stale configured device");
-        } else {
-            info!(device_id = %stale_id, "Unregistered stale configured device");
-        }
-    }
-
     // --- Register all devices with HomeCore and subscribe to commands --------
     // Registration uses DevicePublisher (not PluginClient, which is consumed).
     for dev in &devices {
@@ -256,7 +243,14 @@ async fn try_start(
         time_clocks = time_clocks.len(),
         "All devices, scenes, and timeclock events registered with HomeCore"
     );
-    save_published_ids(&cache_path, &current_ids)?;
+
+    // Reconcile against the SDK-tracked set: anything from a prior
+    // session that's no longer in [[devices]] / [[scenes]] /
+    // [[time_clocks]] gets unregistered.
+    let live: std::collections::HashSet<String> = current_ids.iter().cloned().collect();
+    if let Err(e) = publisher.reconcile_devices(live).await {
+        warn!(error = %e, "reconcile_devices failed");
+    }
 
     // --- Build and run bridge (handles LIP reconnection internally) ----------
     let bridge = bridge::Bridge::new(devices, scenes, time_clocks, publisher, cfg.lutron.clone());
@@ -265,22 +259,11 @@ async fn try_start(
     Ok(())
 }
 
+/// Path of the cross-restart device-id snapshot, sibling to
+/// config.toml. Owned by the SDK device tracker.
 fn published_ids_cache_path(config_path: &str) -> PathBuf {
     Path::new(config_path)
         .parent()
         .unwrap_or_else(|| Path::new("."))
         .join(".published-device-ids.json")
-}
-
-fn load_published_ids(path: &Path) -> Vec<String> {
-    std::fs::read_to_string(path)
-        .ok()
-        .and_then(|text| serde_json::from_str::<Vec<String>>(&text).ok())
-        .unwrap_or_default()
-}
-
-fn save_published_ids(path: &Path, device_ids: &[String]) -> Result<()> {
-    let payload = serde_json::to_vec_pretty(device_ids)?;
-    std::fs::write(path, payload)?;
-    Ok(())
 }
