@@ -1,5 +1,7 @@
 # hc-lutron
 
+[![CI](https://github.com/homeCore-io/hc-lutron/actions/workflows/ci.yml/badge.svg)](https://github.com/homeCore-io/hc-lutron/actions/workflows/ci.yml) [![Release](https://github.com/homeCore-io/hc-lutron/actions/workflows/release.yml/badge.svg)](https://github.com/homeCore-io/hc-lutron/actions/workflows/release.yml) [![Dashboard](https://img.shields.io/badge/builds-dashboard-blue?style=flat-square)](https://homecore.io/lf-workflow-dash/)
+
 Bridges Lutron RadioRA2 devices into HomeCore via the Lutron Integration Protocol (LIP) over telnet.
 
 ## Supported device types
