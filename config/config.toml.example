@@ -19,11 +19,12 @@ password = ""
 host = "192.168.1.100"    # IP address of the RA2 Main Repeater
 port = 23                  # default — do not change unless redirected
 
-# Integration account credentials.
-# Factory defaults: lutron / integration
-# RTI-based systems: rti / integration
-username = "rti"
-password = "integration"
+# Integration account credentials — fill in your own.
+# Factory defaults are well-known (lutron/integration, rti/integration);
+# change the integration account password in RadioRA Setup before you
+# rely on this LIP connection for anything.
+username = ""
+password = ""
 
 # Global fade time for dimmers and switches (seconds, 0.0 = instant).
 # Can be overridden per device with fade_secs in [[devices]].
